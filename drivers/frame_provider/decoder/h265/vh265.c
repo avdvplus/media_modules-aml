@@ -15,8 +15,12 @@
  *
  */
 #define DEBUG
+
+#include <asm/unaligned.h>
+
 #include <linux/kernel.h>
 #include <linux/module.h>
+#include <linux/string.h>
 #include <linux/types.h>
 #include <linux/errno.h>
 #include <linux/interrupt.h>
@@ -48,10 +52,6 @@
 #include "../../../common/chips/decoder_cpu_ver_info.h"
 #include "../utils/vdec_v4l2_buffer_ops.h"
 #include <media/v4l2-mem2mem.h>
-
-#include <linux/kernel.h>
-#include <linux/module.h>
-#include <linux/string.h>
 
 /*
 to enable DV of frame mode
@@ -2730,146 +2730,202 @@ static void uninit_detrefill_buf(struct hevc_state_s *hevc)
 static void convUnc8x4blk(uint16_t* blk8x4Luma,
 	uint16_t* blk8x4Cb, uint16_t* blk8x4Cr, uint16_t* cmBodyBuf, int32_t direction)
 {
+	const uint16_t mask = 0x3ff;  // 10-bit mask
+
 	if (direction == 0) {
-		blk8x4Luma[3 + 0 * 8] = ((cmBodyBuf[0] >> 0)) & 0x3ff;
-		blk8x4Luma[3 + 1 * 8] = ((cmBodyBuf[1] << 6)
-			| (cmBodyBuf[0] >> 10)) & 0x3ff;
-		blk8x4Luma[3 + 2 * 8] = ((cmBodyBuf[1] >> 4)) & 0x3ff;
-		blk8x4Luma[3 + 3 * 8] = ((cmBodyBuf[2] << 2)
-			| (cmBodyBuf[1] >> 14)) & 0x3ff;
-		blk8x4Luma[7 + 0 * 8] = ((cmBodyBuf[3] << 8)
-			| (cmBodyBuf[2] >> 8)) & 0x3ff;
-		blk8x4Luma[7 + 1 * 8] = ((cmBodyBuf[3] >> 2)) & 0x3ff;
-		blk8x4Luma[7 + 2 * 8] = ((cmBodyBuf[4] << 4)
-			| (cmBodyBuf[3] >> 12)) & 0x3ff;
-		blk8x4Luma[7 + 3 * 8] = ((cmBodyBuf[4] >> 6)) & 0x3ff;
-		blk8x4Cb  [0 + 0 * 4] = ((cmBodyBuf[5] >> 0)) & 0x3ff;
-		blk8x4Cr  [0 + 0 * 4] = ((cmBodyBuf[6]	<< 6)
-			| (cmBodyBuf[5] >> 10)) & 0x3ff;
-		blk8x4Cb  [0 + 1 * 4] = ((cmBodyBuf[6] >> 4)) & 0x3ff;
-		blk8x4Cr  [0 + 1 * 4] = ((cmBodyBuf[7] << 2)
-			| (cmBodyBuf[6] >> 14)) & 0x3ff;
 
-		blk8x4Luma[0 + 0 * 8] = ((cmBodyBuf[0 + 8] >> 0)) & 0x3ff;
-		blk8x4Luma[1 + 0 * 8] = ((cmBodyBuf[1 + 8] << 6) |
-			(cmBodyBuf[0 + 8] >> 10)) & 0x3ff;
-		blk8x4Luma[2 + 0 * 8] = ((cmBodyBuf[1 + 8] >> 4)) & 0x3ff;
-		blk8x4Luma[0 + 1 * 8] = ((cmBodyBuf[2 + 8] << 2) |
-			(cmBodyBuf[1 + 8] >> 14)) & 0x3ff;
-		blk8x4Luma[1 + 1 * 8] = ((cmBodyBuf[3 + 8] << 8) |
-			(cmBodyBuf[2 + 8] >> 8)) & 0x3ff;
-		blk8x4Luma[2 + 1 * 8] = ((cmBodyBuf[3 + 8] >> 2)) & 0x3ff;
-		blk8x4Luma[0 + 2 * 8] = ((cmBodyBuf[4 + 8] << 4) |
-			(cmBodyBuf[3 + 8] >> 12)) & 0x3ff;
-		blk8x4Luma[1 + 2 * 8] = ((cmBodyBuf[4 + 8] >> 6)) & 0x3ff;
-		blk8x4Luma[2 + 2 * 8] = ((cmBodyBuf[5 + 8] >> 0)) & 0x3ff;
-		blk8x4Luma[0 + 3 * 8] = ((cmBodyBuf[6 + 8] << 6) |
-			(cmBodyBuf[5 + 8] >> 10)) & 0x3ff;
-		blk8x4Luma[1 + 3 * 8] = ((cmBodyBuf[6 + 8] >> 4)) & 0x3ff;
-		blk8x4Luma[2 + 3 * 8] = ((cmBodyBuf[7 + 8] << 2) |
-			(cmBodyBuf[6 + 8] >> 14)) & 0x3ff;
+		// Prefetch cmBodyBuf data for better cache usage on ARM
+		__builtin_prefetch(cmBodyBuf, 0);
+		__builtin_prefetch(cmBodyBuf + 8, 0);
+		__builtin_prefetch(cmBodyBuf + 16, 0);
+		__builtin_prefetch(cmBodyBuf + 24, 0);
 
-		blk8x4Luma[4 + 0 * 8] = ((cmBodyBuf[0 + 16] >> 0)) & 0x3ff;
-		blk8x4Luma[5 + 0 * 8] = ((cmBodyBuf[1 + 16] << 6) |
-			(cmBodyBuf[0 + 16] >> 10)) & 0x3ff;
-		blk8x4Luma[6 + 0 * 8] = ((cmBodyBuf[1 + 16] >> 4)) & 0x3ff;
-		blk8x4Luma[4 + 1 * 8] = ((cmBodyBuf[2 + 16] << 2) |
-			(cmBodyBuf[1 + 16] >> 14)) & 0x3ff;
-		blk8x4Luma[5 + 1 * 8] = ((cmBodyBuf[3 + 16] << 8) |
-			(cmBodyBuf[2 + 16] >> 8)) & 0x3ff;
-		blk8x4Luma[6 + 1 * 8] = ((cmBodyBuf[3 + 16] >> 2)) & 0x3ff;
-		blk8x4Luma[4 + 2 * 8] = ((cmBodyBuf[4 + 16] << 4) |
-			(cmBodyBuf[3 + 16] >> 12)) & 0x3ff;
-		blk8x4Luma[5 + 2 * 8] = ((cmBodyBuf[4 + 16] >> 6)) & 0x3ff;
-		blk8x4Luma[6 + 2 * 8] = ((cmBodyBuf[5 + 16] >> 0)) & 0x3ff;
-		blk8x4Luma[4 + 3 * 8] = ((cmBodyBuf[6 + 16] << 6) |
-			(cmBodyBuf[5 + 16] >> 10)) & 0x3ff;
-		blk8x4Luma[5 + 3 * 8] = ((cmBodyBuf[6 + 16] >> 4)) & 0x3ff;
-		blk8x4Luma[6 + 3 * 8] = ((cmBodyBuf[7 + 16] << 2) |
-			(cmBodyBuf[6 + 16] >> 14)) & 0x3ff;
+		uint16_t val0, val1, val2, val3, val4, val5, val6, val7;
 
-		blk8x4Cb[1 + 0 * 4] = ((cmBodyBuf[0 + 24] >> 0)) & 0x3ff;
-		blk8x4Cr[1 + 0 * 4] = ((cmBodyBuf[1 + 24] << 6) |
-			(cmBodyBuf[0 + 24] >> 10)) & 0x3ff;
-		blk8x4Cb[2 + 0 * 4] = ((cmBodyBuf[1 + 24] >> 4)) & 0x3ff;
-		blk8x4Cr[2 + 0 * 4] = ((cmBodyBuf[2 + 24] << 2) |
-			(cmBodyBuf[1 + 24] >> 14)) & 0x3ff;
-		blk8x4Cb[3 + 0 * 4] = ((cmBodyBuf[3 + 24] << 8) |
-			(cmBodyBuf[2 + 24] >> 8)) & 0x3ff;
-		blk8x4Cr[3 + 0 * 4] = ((cmBodyBuf[3 + 24] >> 2)) & 0x3ff;
-		blk8x4Cb[1 + 1 * 4] = ((cmBodyBuf[4 + 24] << 4) |
-			(cmBodyBuf[3 + 24] >> 12)) & 0x3ff;
-		blk8x4Cr[1 + 1 * 4] = ((cmBodyBuf[4 + 24] >> 6)) & 0x3ff;
-		blk8x4Cb[2 + 1 * 4] = ((cmBodyBuf[5 + 24] >> 0)) & 0x3ff;
-		blk8x4Cr[2 + 1 * 4] = ((cmBodyBuf[6 + 24] << 6) |
-			(cmBodyBuf[5 + 24] >> 10)) & 0x3ff;
-		blk8x4Cb[3 + 1 * 4] = ((cmBodyBuf[6 + 24] >> 4)) & 0x3ff;
-		blk8x4Cr[3 + 1 * 4] = ((cmBodyBuf[7 + 24] << 2) |
-			(cmBodyBuf[6 + 24] >> 14)) & 0x3ff;
-	} else {
-		cmBodyBuf[0 + 8 * 0] = (blk8x4Luma[3 + 1 * 8] << 10) |
-			blk8x4Luma[3 + 0 * 8];
-		cmBodyBuf[1 + 8 * 0] = (blk8x4Luma[3 + 3 * 8] << 14) |
-			(blk8x4Luma[3 + 2 * 8] << 4) | (blk8x4Luma[3 + 1 * 8] >> 6);
-		cmBodyBuf[2 + 8 * 0] = (blk8x4Luma[7 + 0 * 8] << 8) |
-			(blk8x4Luma[3 + 3 * 8] >> 2);
-		cmBodyBuf[3 + 8 * 0] = (blk8x4Luma[7 + 2 * 8] << 12) |
-			(blk8x4Luma[7 + 1 * 8] << 2) | (blk8x4Luma[7 + 0 * 8] >>8);
-		cmBodyBuf[4 + 8 * 0] = (blk8x4Luma[7 + 3 * 8] << 6) |
-			(blk8x4Luma[7 + 2 * 8] >>4);
-		cmBodyBuf[5 + 8 * 0] = (blk8x4Cr[0 + 0 * 4] << 10) |
-			blk8x4Cb[0 + 0 * 4];
-		cmBodyBuf[6 + 8 * 0] = (blk8x4Cr[0 + 1 * 4] << 14) |
-			(blk8x4Cb[0 + 1 * 4] << 4)   | (blk8x4Cr[0 + 0 * 4] >> 6);
-		cmBodyBuf[7 + 8 * 0] = (0<< 8) | (blk8x4Cr[0 + 1 * 4] >> 2);
+		val0 = cmBodyBuf[0];
+		val1 = cmBodyBuf[1];
+		val2 = cmBodyBuf[2];
+		val3 = cmBodyBuf[3];
+		val4 = cmBodyBuf[4];
+		val5 = cmBodyBuf[5];
+		val6 = cmBodyBuf[6];
+		val7 = cmBodyBuf[7];
 
-		cmBodyBuf[0 + 8 * 1] = (blk8x4Luma[1 + 0 * 8] << 10) |
-			blk8x4Luma[0 + 0 * 8];
-		cmBodyBuf[1 + 8 * 1] = (blk8x4Luma[0 + 1 * 8] << 14) |
-			(blk8x4Luma[2 + 0 * 8] << 4) | (blk8x4Luma[1 + 0 * 8] >> 6);
-		cmBodyBuf[2 + 8 * 1] = (blk8x4Luma[1 + 1 * 8] << 8) |
-			(blk8x4Luma[0 + 1 * 8] >> 2);
-		cmBodyBuf[3 + 8 * 1] = (blk8x4Luma[0 + 2 * 8] << 12) |
-			(blk8x4Luma[2 + 1 * 8] << 2) | (blk8x4Luma[1 + 1 * 8] >>8);
-		cmBodyBuf[4 + 8 * 1] = (blk8x4Luma[1 + 2 * 8] << 6) |
-			(blk8x4Luma[0 + 2 * 8] >>4);
-		cmBodyBuf[5 + 8 * 1] = (blk8x4Luma[0 + 3 * 8] << 10) |
-			blk8x4Luma[2 + 2 * 8];
-		cmBodyBuf[6 + 8 * 1] = (blk8x4Luma[2 + 3 * 8] << 14) |
-			(blk8x4Luma[1 + 3 * 8] << 4) | (blk8x4Luma[0 + 3 * 8] >> 6);
-		cmBodyBuf[7 + 8 * 1] = (0<< 8) | (blk8x4Luma[2 + 3 * 8] >> 2);
+		blk8x4Luma[3 + 0 * 8] = (val0 >> 0) & mask;
+		blk8x4Luma[3 + 1 * 8] = ((val1 << 6) | (val0 >> 10)) & mask;
+		blk8x4Luma[3 + 2 * 8] = (val1 >> 4) & mask;
+		blk8x4Luma[3 + 3 * 8] = ((val2 << 2) | (val1 >> 14)) & mask;
+		blk8x4Luma[7 + 0 * 8] = ((val3 << 8) | (val2 >> 8)) & mask;
+		blk8x4Luma[7 + 1 * 8] = (val3 >> 2) & mask;
+		blk8x4Luma[7 + 2 * 8] = ((val4 << 4) | (val3 >> 12)) & mask;
+		blk8x4Luma[7 + 3 * 8] = (val4 >> 6) & mask;
+		blk8x4Cb[0 + 0 * 4] = (val5 >> 0) & mask;
+		blk8x4Cr[0 + 0 * 4] = ((val6 << 6) | (val5 >> 10)) & mask;
+		blk8x4Cb[0 + 1 * 4] = (val6 >> 4) & mask;
+		blk8x4Cr[0 + 1 * 4] = ((val7 << 2) | (val6 >> 14)) & mask;
 
-		cmBodyBuf[0 + 8 * 2] = (blk8x4Luma[5 + 0 * 8] << 10) |
-			blk8x4Luma[4 + 0 * 8];
-		cmBodyBuf[1 + 8 * 2] = (blk8x4Luma[4 + 1 * 8] << 14) |
-			(blk8x4Luma[6 + 0 * 8] << 4) | (blk8x4Luma[5 + 0 * 8] >> 6);
-		cmBodyBuf[2 + 8 * 2] = (blk8x4Luma[5 + 1 * 8] << 8) |
-			(blk8x4Luma[4 + 1 * 8] >> 2);
-		cmBodyBuf[3 + 8 * 2] = (blk8x4Luma[4 + 2 * 8] << 12) |
-			(blk8x4Luma[6 + 1 * 8] << 2) | (blk8x4Luma[5 + 1 * 8] >>8);
-		cmBodyBuf[4 + 8 * 2] = (blk8x4Luma[5 + 2 * 8] << 6) |
-			(blk8x4Luma[4 + 2 * 8] >>4);
-		cmBodyBuf[5 + 8 * 2] = (blk8x4Luma[4 + 3 * 8] << 10) |
-			blk8x4Luma[6 + 2 * 8];
-		cmBodyBuf[6 + 8 * 2] = (blk8x4Luma[6 + 3 * 8] << 14) |
-			(blk8x4Luma[5 + 3 * 8] << 4) | (blk8x4Luma[4 + 3 * 8] >> 6);
-		cmBodyBuf[7 + 8 * 2] = (0<< 8) | (blk8x4Luma[6 + 3 * 8] >> 2);
+		// Block 2
+		val0 = cmBodyBuf[0 + 8];
+		val1 = cmBodyBuf[1 + 8];
+		val2 = cmBodyBuf[2 + 8];
+		val3 = cmBodyBuf[3 + 8];
+		val4 = cmBodyBuf[4 + 8];
+		val5 = cmBodyBuf[5 + 8];
+		val6 = cmBodyBuf[6 + 8];
+		val7 = cmBodyBuf[7 + 8];
 
-		cmBodyBuf[0 + 8 * 3] = (blk8x4Cr[1 + 0 * 4] << 10) |
-			blk8x4Cb[1 + 0 * 4];
-		cmBodyBuf[1 + 8 * 3] = (blk8x4Cr[2 + 0 * 4] << 14) |
-			(blk8x4Cb[2 + 0 * 4] << 4) | (blk8x4Cr[1 + 0 * 4] >> 6);
-		cmBodyBuf[2 + 8 * 3] = (blk8x4Cb[3 + 0 * 4] << 8) |
-			(blk8x4Cr[2 + 0 * 4] >> 2);
-		cmBodyBuf[3 + 8 * 3] = (blk8x4Cb[1 + 1 * 4] << 12) |
-			(blk8x4Cr[3 + 0 * 4] << 2) | (blk8x4Cb[3 + 0 * 4] >>8);
-		cmBodyBuf[4 + 8 * 3] = (blk8x4Cr[1 + 1 * 4] << 6) |
-			(blk8x4Cb[1 + 1 * 4] >>4);
-		cmBodyBuf[5 + 8 * 3] = (blk8x4Cr[2 + 1 * 4] << 10) |
-			blk8x4Cb[2 + 1 * 4];
-		cmBodyBuf[6 + 8 * 3] = (blk8x4Cr[3 + 1 * 4] << 14) |
-			(blk8x4Cb[3 + 1 * 4] << 4) | (blk8x4Cr[2 + 1 * 4] >> 6);
-		cmBodyBuf[7 + 8 * 3] = (0 << 8) | (blk8x4Cr[3 + 1 * 4] >> 2);
+		blk8x4Luma[0 + 0 * 8] = (val0 >> 0) & mask;
+		blk8x4Luma[1 + 0 * 8] = ((val1 << 6) | (val0 >> 10)) & mask;
+		blk8x4Luma[2 + 0 * 8] = (val1 >> 4) & mask;
+		blk8x4Luma[0 + 1 * 8] = ((val2 << 2) | (val1 >> 14)) & mask;
+		blk8x4Luma[1 + 1 * 8] = ((val3 << 8) | (val2 >> 8)) & mask;
+		blk8x4Luma[2 + 1 * 8] = (val3 >> 2) & mask;
+		blk8x4Luma[0 + 2 * 8] = ((val4 << 4) | (val3 >> 12)) & mask;
+		blk8x4Luma[1 + 2 * 8] = (val4 >> 6) & mask;
+		blk8x4Luma[2 + 2 * 8] = (val5 >> 0) & mask;
+		blk8x4Luma[0 + 3 * 8] = ((val6 << 6) | (val5 >> 10)) & mask;
+		blk8x4Luma[1 + 3 * 8] = (val6 >> 4) & mask;
+		blk8x4Luma[2 + 3 * 8] = ((val7 << 2) | (val6 >> 14)) & mask;
+
+		// Block 3
+		val0 = cmBodyBuf[0 + 16];
+		val1 = cmBodyBuf[1 + 16];
+		val2 = cmBodyBuf[2 + 16];
+		val3 = cmBodyBuf[3 + 16];
+		val4 = cmBodyBuf[4 + 16];
+		val5 = cmBodyBuf[5 + 16];
+		val6 = cmBodyBuf[6 + 16];
+		val7 = cmBodyBuf[7 + 16];
+		
+		blk8x4Luma[4 + 0 * 8] = (val0 >> 0) & mask;
+		blk8x4Luma[5 + 0 * 8] = ((val1 << 6) | (val0 >> 10)) & mask;
+		blk8x4Luma[6 + 0 * 8] = (val1 >> 4) & mask;
+		blk8x4Luma[4 + 1 * 8] = ((val2 << 2) | (val1 >> 14)) & mask;
+		blk8x4Luma[5 + 1 * 8] = ((val3 << 8) | (val2 >> 8)) & mask;
+		blk8x4Luma[6 + 1 * 8] = (val3 >> 2) & mask;
+		blk8x4Luma[4 + 2 * 8] = ((val4 << 4) | (val3 >> 12)) & mask;
+		blk8x4Luma[5 + 2 * 8] = (val4 >> 6) & mask;
+		blk8x4Luma[6 + 2 * 8] = (val5 >> 0) & mask;
+		blk8x4Luma[4 + 3 * 8] = ((val6 << 6) | (val5 >> 10)) & mask;
+		blk8x4Luma[5 + 3 * 8] = (val6 >> 4) & mask;
+		blk8x4Luma[6 + 3 * 8] = ((val7 << 2) | (val6 >> 14)) & mask;
+
+		// Block 4
+		val0 = cmBodyBuf[0 + 24];
+		val1 = cmBodyBuf[1 + 24];
+		val2 = cmBodyBuf[2 + 24];
+		val3 = cmBodyBuf[3 + 24];
+		val4 = cmBodyBuf[4 + 24];
+		val5 = cmBodyBuf[5 + 24];
+		val6 = cmBodyBuf[6 + 24];
+		val7 = cmBodyBuf[7 + 24];
+		
+		blk8x4Cb[1 + 0 * 4] = (val0 >> 0) & mask;
+		blk8x4Cr[1 + 0 * 4] = ((val1 << 6) | (val0 >> 10)) & mask;
+		blk8x4Cb[2 + 0 * 4] = (val1 >> 4) & mask;
+		blk8x4Cr[2 + 0 * 4] = ((val2 << 2) | (val1 >> 14)) & mask;
+		blk8x4Cb[3 + 0 * 4] = ((val3 << 8) | (val2 >> 8)) & mask;
+		blk8x4Cr[3 + 0 * 4] = (val3 >> 2) & mask;
+		blk8x4Cb[1 + 1 * 4] = ((val4 << 4) | (val3 >> 12)) & mask;
+		blk8x4Cr[1 + 1 * 4] = (val4 >> 6) & mask;
+		blk8x4Cb[2 + 1 * 4] = (val5 >> 0) & mask;
+		blk8x4Cr[2 + 1 * 4] = ((val6 << 6) | (val5 >> 10)) & mask;
+		blk8x4Cb[3 + 1 * 4] = (val6 >> 4) & mask;
+		blk8x4Cr[3 + 1 * 4] = ((val7 << 2) | (val6 >> 14)) & mask;
+
+	} else { // Direction 1 - YUV to cmBodyBuf
+
+		uint16_t luma_3_0 = blk8x4Luma[3 + 0 * 8];
+		uint16_t luma_3_1 = blk8x4Luma[3 + 1 * 8];
+		uint16_t luma_3_2 = blk8x4Luma[3 + 2 * 8];
+		uint16_t luma_3_3 = blk8x4Luma[3 + 3 * 8];
+		uint16_t luma_7_0 = blk8x4Luma[7 + 0 * 8];
+		uint16_t luma_7_1 = blk8x4Luma[7 + 1 * 8];
+		uint16_t luma_7_2 = blk8x4Luma[7 + 2 * 8];
+		uint16_t luma_7_3 = blk8x4Luma[7 + 3 * 8];
+
+		uint16_t cb_0_0 = blk8x4Cb[0 + 0 * 4];
+		uint16_t cr_0_0 = blk8x4Cr[0 + 0 * 4];
+		uint16_t cb_0_1 = blk8x4Cb[0 + 1 * 4];
+		uint16_t cr_0_1 = blk8x4Cr[0 + 1 * 4];
+
+		cmBodyBuf[0 + 8 * 0] = (luma_3_1 << 10) | luma_3_0;
+		cmBodyBuf[1 + 8 * 0] = (luma_3_3 << 14) | (luma_3_2 << 4) | (luma_3_1 >> 6);
+		cmBodyBuf[2 + 8 * 0] = (luma_7_0 << 8) | (luma_3_3 >> 2);
+		cmBodyBuf[3 + 8 * 0] = (luma_7_2 << 12) | (luma_7_1 << 2) | (luma_7_0 >> 8);
+		cmBodyBuf[4 + 8 * 0] = (luma_7_3 << 6) | (luma_7_2 >> 4);
+		cmBodyBuf[5 + 8 * 0] = (cr_0_0 << 10) | cb_0_0;
+		cmBodyBuf[6 + 8 * 0] = (cr_0_1 << 14) | (cb_0_1 << 4) | (cr_0_0 >> 6);
+		cmBodyBuf[7 + 8 * 0] = (0 << 8) | (cr_0_1 >> 2);
+
+		// Block 2
+		uint16_t luma_0_0 = blk8x4Luma[0 + 0 * 8];
+		uint16_t luma_1_0 = blk8x4Luma[1 + 0 * 8];
+		uint16_t luma_2_0 = blk8x4Luma[2 + 0 * 8];
+		uint16_t luma_0_1 = blk8x4Luma[0 + 1 * 8];
+		uint16_t luma_1_1 = blk8x4Luma[1 + 1 * 8];
+		uint16_t luma_2_1 = blk8x4Luma[2 + 1 * 8];
+		uint16_t luma_0_2 = blk8x4Luma[0 + 2 * 8];
+		uint16_t luma_1_2 = blk8x4Luma[1 + 2 * 8];
+		uint16_t luma_2_2 = blk8x4Luma[2 + 2 * 8];
+		uint16_t luma_0_3 = blk8x4Luma[0 + 3 * 8];
+		uint16_t luma_1_3 = blk8x4Luma[1 + 3 * 8];
+		uint16_t luma_2_3 = blk8x4Luma[2 + 3 * 8];
+
+		cmBodyBuf[0 + 8 * 1] = (luma_1_0 << 10) | luma_0_0;
+		cmBodyBuf[1 + 8 * 1] = (luma_0_1 << 14) | (luma_2_0 << 4) | (luma_1_0 >> 6);
+		cmBodyBuf[2 + 8 * 1] = (luma_1_1 << 8) | (luma_0_1 >> 2);
+		cmBodyBuf[3 + 8 * 1] = (luma_0_2 << 12) | (luma_2_1 << 2) | (luma_1_1 >> 8);
+		cmBodyBuf[4 + 8 * 1] = (luma_1_2 << 6) | (luma_0_2 >> 4);
+		cmBodyBuf[5 + 8 * 1] = (luma_0_3 << 10) | luma_2_2;
+		cmBodyBuf[6 + 8 * 1] = (luma_2_3 << 14) | (luma_1_3 << 4) | (luma_0_3 >> 6);
+		cmBodyBuf[7 + 8 * 1] = (0 << 8) | (luma_2_3 >> 2);
+
+		// Block 3
+		uint16_t luma_4_0 = blk8x4Luma[4 + 0 * 8];
+		uint16_t luma_5_0 = blk8x4Luma[5 + 0 * 8];
+		uint16_t luma_6_0 = blk8x4Luma[6 + 0 * 8];
+		uint16_t luma_4_1 = blk8x4Luma[4 + 1 * 8];
+		uint16_t luma_5_1 = blk8x4Luma[5 + 1 * 8];
+		uint16_t luma_6_1 = blk8x4Luma[6 + 1 * 8];
+		uint16_t luma_4_2 = blk8x4Luma[4 + 2 * 8];
+		uint16_t luma_5_2 = blk8x4Luma[5 + 2 * 8];
+		uint16_t luma_6_2 = blk8x4Luma[6 + 2 * 8];
+		uint16_t luma_4_3 = blk8x4Luma[4 + 3 * 8];
+		uint16_t luma_5_3 = blk8x4Luma[5 + 3 * 8];
+		uint16_t luma_6_3 = blk8x4Luma[6 + 3 * 8];
+
+		cmBodyBuf[0 + 8 * 2] = (luma_5_0 << 10) | luma_4_0;
+		cmBodyBuf[1 + 8 * 2] = (luma_4_1 << 14) | (luma_6_0 << 4) | (luma_5_0 >> 6);
+		cmBodyBuf[2 + 8 * 2] = (luma_5_1 << 8) | (luma_4_1 >> 2);
+		cmBodyBuf[3 + 8 * 2] = (luma_4_2 << 12) | (luma_6_1 << 2) | (luma_5_1 >> 8);
+		cmBodyBuf[4 + 8 * 2] = (luma_5_2 << 6) | (luma_4_2 >> 4);
+		cmBodyBuf[5 + 8 * 2] = (luma_4_3 << 10) | luma_6_2;
+		cmBodyBuf[6 + 8 * 2] = (luma_6_3 << 14) | (luma_5_3 << 4) | (luma_4_3 >> 6);
+		cmBodyBuf[7 + 8 * 2] = (0 << 8) | (luma_6_3 >> 2);
+
+		// Block 4
+		uint16_t cb_1_0 = blk8x4Cb[1 + 0 * 4];
+		uint16_t cr_1_0 = blk8x4Cr[1 + 0 * 4];
+		uint16_t cb_2_0 = blk8x4Cb[2 + 0 * 4];
+		uint16_t cr_2_0 = blk8x4Cr[2 + 0 * 4];
+		uint16_t cb_3_0 = blk8x4Cb[3 + 0 * 4];
+		uint16_t cr_3_0 = blk8x4Cr[3 + 0 * 4];
+		uint16_t cb_1_1 = blk8x4Cb[1 + 1 * 4];
+		uint16_t cr_1_1 = blk8x4Cr[1 + 1 * 4];
+		uint16_t cb_2_1 = blk8x4Cb[2 + 1 * 4];
+		uint16_t cr_2_1 = blk8x4Cr[2 + 1 * 4];
+		uint16_t cb_3_1 = blk8x4Cb[3 + 1 * 4];
+		uint16_t cr_3_1 = blk8x4Cr[3 + 1 * 4];
+
+		cmBodyBuf[0 + 8 * 3] = (cr_1_0 << 10) | cb_1_0;
+		cmBodyBuf[1 + 8 * 3] = (cr_2_0 << 14) | (cb_2_0 << 4) | (cr_1_0 >> 6);
+		cmBodyBuf[2 + 8 * 3] = (cb_3_0 << 8) | (cr_2_0 >> 2);
+		cmBodyBuf[3 + 8 * 3] = (cb_1_1 << 12) | (cr_3_0 << 2) | (cb_3_0 >> 8);
+		cmBodyBuf[4 + 8 * 3] = (cr_1_1 << 6) | (cb_1_1 >> 4);
+		cmBodyBuf[5 + 8 * 3] = (cr_2_1 << 10) | cb_2_1;
+		cmBodyBuf[6 + 8 * 3] = (cr_3_1 << 14) | (cb_3_1 << 4) | (cr_2_1 >> 6);
+		cmBodyBuf[7 + 8 * 3] = (0 << 8) | (cr_3_1 >> 2);
 	}
 }
 
@@ -6696,21 +6752,9 @@ static void set_aux_data(struct hevc_state_s *hevc,
 					else
 						valid_tag = 0;
 					if (valid_tag && len > 0) {
-						pic->aux_data_size +=
-						(len + 8);
-						h[0] = (len >> 24)
-						& 0xff;
-						h[1] = (len >> 16)
-						& 0xff;
-						h[2] = (len >> 8)
-						& 0xff;
-						h[3] = (len >> 0)
-						& 0xff;
-						h[6] =
-						(padding_len >> 8)
-						& 0xff;
-						h[7] = (padding_len)
-						& 0xff;
+						pic->aux_data_size += (len + 8);
+						put_unaligned_be32(len, h);
+						put_unaligned_be16(padding_len, h + 6);
 						h += (len + 8);
 						p += 8;
 						len = 0;
@@ -8623,6 +8667,7 @@ static int parse_sei(struct hevc_state_s *hevc,
 		
 		if (p+payload_size <= sei_buf+size) {
 			switch (payload_type) {
+
 			case SEI_PicTiming:
 				if ((parser_sei_enable & 0x4) &&
 					hevc->frame_field_info_present_flag) {
@@ -8637,6 +8682,7 @@ static int parse_sei(struct hevc_state_s *hevc,
 					}
 				}
 				break;
+
 			case SEI_UserDataITU_T_T35:
 				p_sei = p;
 				if (p_sei[0] == 0xB5
@@ -8681,6 +8727,7 @@ static int parse_sei(struct hevc_state_s *hevc,
 				}
 
 				break;
+
 			case SEI_MasteringDisplayColorVolume:
 				/*hevc_print(hevc, 0,
 					"sei type: primary display color volume %d, size %d\n",
@@ -8690,24 +8737,16 @@ static int parse_sei(struct hevc_state_s *hevc,
 				p_sei = p;
 				for (i = 0; i < 3; i++) {
 					for (j = 0; j < 2; j++) {
-						hevc->primaries[i][j]
-							= (*p_sei<<8)
-							| *(p_sei+1);
+						hevc->primaries[i][j] = get_unaligned_be16(p_sei);
 						p_sei += 2;
 					}
 				}
 				for (i = 0; i < 2; i++) {
-					hevc->white_point[i]
-						= (*p_sei<<8)
-						| *(p_sei+1);
+					hevc->white_point[i] = get_unaligned_be16(p_sei);
 					p_sei += 2;
 				}
 				for (i = 0; i < 2; i++) {
-					hevc->luminance[i]
-						= (*p_sei<<24)
-						| (*(p_sei+1)<<16)
-						| (*(p_sei+2)<<8)
-						| *(p_sei+3);
+					hevc->luminance[i] = get_unaligned_be32(p_sei);
 					p_sei += 4;
 				}
 				hevc->sei_present_flag |=
@@ -8727,6 +8766,7 @@ static int parse_sei(struct hevc_state_s *hevc,
 					hevc->luminance[0],
 					hevc->luminance[1]);*/
 				break;
+
 			case SEI_ContentLightLevel:
 				if (get_dbg_flag(hevc) & H265_DEBUG_PRINT_SEI)
 					hevc_print(hevc, 0,
@@ -8734,14 +8774,10 @@ static int parse_sei(struct hevc_state_s *hevc,
 					payload_type, payload_size);
 				/* content_light_level */
 				p_sei = p;
-				hevc->content_light_level[0]
-					= (*p_sei<<8) | *(p_sei+1);
+				hevc->content_light_level[0] = get_unaligned_be16(p_sei);
 				p_sei += 2;
-				hevc->content_light_level[1]
-					= (*p_sei<<8) | *(p_sei+1);
-				p_sei += 2;
-				hevc->sei_present_flag |=
-					SEI_CONTENT_LIGHT_LEVEL_MASK;
+				hevc->content_light_level[1] = get_unaligned_be16(p_sei);
+				hevc->sei_present_flag |= SEI_CONTENT_LIGHT_LEVEL_MASK;
 				if (get_dbg_flag(hevc) & H265_DEBUG_PRINT_SEI)
 					hevc_print(hevc, 0,
 						"\tmax cll = %04x, max_pa_cll = %04x\n",
@@ -8889,31 +8925,28 @@ void alt_hlg_parse_sei(struct hevc_state_s *hevc, unsigned char* input, size_t i
 static void process_mdcv_sei(struct hevc_state_s *hevc, const unsigned char* data) {
 
   const unsigned char* p_sei = data;
-	int color;
-	int coord;
-	int type;
+  int color;
+  int coord;
+  int type;
 
   // Process display primaries (RGB coordinates)
   for (color = 0; color < 3; color++) {
     for (coord = 0; coord < 2; coord++) {
-      hevc->primaries[color][coord] = (p_sei[0] << 8) | p_sei[1];
+      hevc->primaries[color][coord] = get_unaligned_be16(p_sei);
       p_sei += 2;
     }
   }
 
   // Process white point coordinates
   for (coord = 0; coord < 2; coord++) {
-    hevc->white_point[coord] = (p_sei[0] << 8) | p_sei[1];
+    hevc->white_point[coord] = get_unaligned_be16(p_sei);
     p_sei += 2;
   }
 
   // Process min/max luminance values
   for (type = 0; type < 2; type++) {
-    hevc->luminance[type] = (p_sei[0] << 24) | 
-                            (p_sei[1] << 16) |
-                            (p_sei[2] << 8)  |
-                             p_sei[3];
-  p_sei += 4;
+    hevc->luminance[type] = get_unaligned_be32(p_sei);
+    p_sei += 4;
   }
 
   hevc->sei_present_flag |= SEI_MASTER_DISPLAY_COLOR_MASK;
@@ -8922,14 +8955,14 @@ static void process_mdcv_sei(struct hevc_state_s *hevc, const unsigned char* dat
 static void process_cll_sei(struct hevc_state_s *hevc, const unsigned char* data) {
 
   const unsigned char* p_sei = data;
-    
+
   // Process max content light level
-  hevc->content_light_level[0] = (p_sei[0] << 8) | p_sei[1];
+  hevc->content_light_level[0] = get_unaligned_be16(p_sei);
   p_sei += 2;
-    
+
   // Process max frame average light level
-  hevc->content_light_level[1] = (p_sei[0] << 8) | p_sei[1];
-    
+  hevc->content_light_level[1] = get_unaligned_be16(p_sei);
+
   hevc->sei_present_flag |= SEI_CONTENT_LIGHT_LEVEL_MASK;
 }
 
@@ -9071,14 +9104,10 @@ static void set_frame_info(struct hevc_state_s *hevc, struct vframe_s *vf,
 		p = pic->aux_data_buf;
 		while (p < pic->aux_data_buf
 			+ pic->aux_data_size - 8) {
-			size = *p++;
-			size = (size << 8) | *p++;
-			size = (size << 8) | *p++;
-			size = (size << 8) | *p++;
-			type = *p++;
-			type = (type << 8) | *p++;
-			type = (type << 8) | *p++;
-			type = (type << 8) | *p++;
+			size = get_unaligned_be32(p);
+			p += 4;
+			type = get_unaligned_be32(p);
+			p += 4;
 			if (type == 0x02000000) {
 				/* hevc_print(hevc, 0,
 				"sei(%d)\n", size); */
