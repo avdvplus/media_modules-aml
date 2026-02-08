@@ -181,7 +181,7 @@ static u32 mv_buf_dynamic_alloc;
  *	0x300, if > 720p,  use mode 4, else use mode 1;
  *	0x2000,if > 2160p, use mode 4, else use mode 0;
  */
-static u32 double_write_mode = 0x2000;
+static u32 double_write_mode = 0x3;
 
 #define DRIVER_NAME "amvdec_vp9"
 #define DRIVER_HEADER_NAME "amvdec_vp9_header"

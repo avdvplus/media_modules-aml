@@ -64,4 +64,8 @@ enum AM_MESON_CPU_MAJOR_ID
 
 enum AM_MESON_CPU_MAJOR_ID get_cpu_major_id(void);
 bool is_cpu_tm2_revb(void);
+
+inline bool is_support_p010_mode(void);
+inline bool is_support_triple_write(void);
+
 #endif

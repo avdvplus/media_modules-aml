@@ -179,3 +179,14 @@ bool is_cpu_tm2_revb(void)
 }
 EXPORT_SYMBOL(is_cpu_tm2_revb);
 
+inline bool is_support_triple_write(void)
+{
+	return false;
+}
+EXPORT_SYMBOL(is_support_triple_write);
+
+inline bool is_support_p010_mode(void)
+{
+	return false;
+}
+EXPORT_SYMBOL(is_support_p010_mode);

@@ -38,6 +38,8 @@
 #define VDEC_GATHER_MEMORY_TYPE		0
 #define VDEC_SCATTER_MEMORY_TYPE	1
 
+#define HDR10P_BUF_SIZE			(128)
+
 /**
  * struct vdec_fb  - decoder frame buffer
  * @mem_type	: gather or scatter memory.

@@ -20,6 +20,7 @@
 #include <linux/errno.h>
 #include <linux/interrupt.h>
 #include <linux/timer.h>
+#include <linux/kfifo.h>
 #include <linux/platform_device.h>
 #include <linux/amlogic/media/utils/amstream.h>
 #include <linux/amlogic/media/frame_sync/ptsserv.h>
@@ -74,6 +75,8 @@
 
 #define INIT_DROP_FRAME_CNT    8
 
+#define MVC_SCALE_FACTOR	2	/* see Rec. ITU-T H.264 (04/2013), Section H.10.2 */
+
 static int vh264mvc_vf_states(struct vframe_states *states, void *);
 static struct vframe_s *vh264mvc_vf_peek(void *);
 static struct vframe_s *vh264mvc_vf_get(void *);
@@ -114,7 +117,6 @@ static u32 sync_outside;
 static u32 vh264mvc_ratio;
 static u32 h264mvc_ar;
 static u32 no_dropping_cnt;
-static s32 init_drop_cnt;
 spinlock_t mvc_rp_lock;
 
 #ifdef DEBUG_SKIP
@@ -189,12 +191,17 @@ unsigned int DECODE_BUFFER_START = 0x00200000;
 unsigned int DECODE_BUFFER_END = 0x05000000;
 
 /* #define DISPLAY_BUFFER_NUM         4 */
-static unsigned int dynamic_buf_num_margin = 8;
+static unsigned int dynamic_buf_num_margin = 6;
 
 #define DECODE_BUFFER_NUM_MAX    16
 #define MAX_BMMU_BUFFER_NUM	(DECODE_BUFFER_NUM_MAX + dynamic_buf_num_margin)
 #define TOTAL_BMMU_BUFF_NUM     (MAX_BMMU_BUFFER_NUM * 2 + 3)
 #define VF_BUFFER_IDX(n) (2  + n)
+
+// There are only 32 different ANC_CANVAS_ADDR registers available which limits the
+// number of buffers to 32. So we need to reduce the possible decoder buffer limit
+// by the dynamic_buf_num_margin.
+#define AMLOGIC_DECODER_BUFFER_LIMIT (DECODE_BUFFER_NUM_MAX - dynamic_buf_num_margin)
 
 #define DECODER_WORK_SPACE_SIZE 0xa0000
 
@@ -250,25 +257,10 @@ static int drop_rate = 2;
 static int drop_thread_hold;
 /**/
 
-struct mvc_buf_s {
-	struct list_head list;
-	struct vframe_s vframe;
-	int display_POC;
-	int view0_buff_id;
-	int view1_buff_id;
-	int view0_drop;
-	int view1_drop;
-	int stream_offset;
-	unsigned int pts;
-} /*mvc_buf_t */;
-
 #define spec2canvas(x)  \
 	(((x)->v_canvas_index << 16) | \
 	 ((x)->u_canvas_index << 8)  | \
 	 ((x)->y_canvas_index << 0))
-
-#define to_mvcbuf(vf)   \
-	container_of(vf, struct mvc_buf_s, vframe)
 
 static int vf_buf_init_flag;
 
@@ -286,6 +278,7 @@ static void uninit_vf_buf(void)
 /* #define QUEUE_SUPPORT */
 
 struct mvc_info_s {
+	struct vframe_s vf;
 	int view0_buf_id;
 	int view1_buf_id;
 	int view0_drop;
@@ -296,29 +289,16 @@ struct mvc_info_s {
 	unsigned int stream_offset;
 };
 
-#define VF_POOL_SIZE        20
-static struct vframe_s vfpool[VF_POOL_SIZE];
-static struct mvc_info_s vfpool_idx[VF_POOL_SIZE];
-static s32 view0_vfbuf_use[DECODE_BUFFER_NUM_MAX];
-static s32 view1_vfbuf_use[DECODE_BUFFER_NUM_MAX];
+#define MVC_INFO_POOL_SIZE        32
 
-static s32 fill_ptr, get_ptr, putting_ptr, put_ptr;
-static s32 dirty_frame_num;
-static s32 enable_recycle;
+static struct mvc_info_s mvc_info_pool[MVC_INFO_POOL_SIZE];
 
-static s32 init_drop_frame_id[INIT_DROP_FRAME_CNT];
-#define INCPTR(p) ptr_atomic_wrap_inc(&p)
-static inline void ptr_atomic_wrap_inc(u32 *ptr)
-{
-	u32 i = *ptr;
+static DECLARE_KFIFO(newframe_q, struct mvc_info_s *, MVC_INFO_POOL_SIZE);
+static DECLARE_KFIFO(display_q, struct mvc_info_s *, MVC_INFO_POOL_SIZE);
+static DECLARE_KFIFO(recycle_q, struct mvc_info_s *, MVC_INFO_POOL_SIZE);
 
-	i++;
-
-	if (i >= VF_POOL_SIZE)
-		i = 0;
-
-	*ptr = i;
-}
+static int drop_frame;
+static int drop_count;
 
 static void set_frame_info(struct vframe_s *vf)
 {
@@ -435,25 +415,13 @@ static void set_frame_info(struct vframe_s *vf)
 static int vh264mvc_vf_states(struct vframe_states *states, void *op_arg)
 {
 	unsigned long flags;
-	int i;
 
 	spin_lock_irqsave(&lock, flags);
-	states->vf_pool_size = VF_POOL_SIZE;
 
-	i = put_ptr - fill_ptr;
-	if (i < 0)
-		i += VF_POOL_SIZE;
-	states->buf_free_num = i;
-
-	i = putting_ptr - put_ptr;
-	if (i < 0)
-		i += VF_POOL_SIZE;
-	states->buf_recycle_num = i;
-
-	i = fill_ptr - get_ptr;
-	if (i < 0)
-		i += VF_POOL_SIZE;
-	states->buf_avail_num = i;
+	states->vf_pool_size = MVC_INFO_POOL_SIZE;
+	states->buf_free_num = kfifo_len(&newframe_q);
+	states->buf_recycle_num = kfifo_len(&recycle_q);
+	states->buf_avail_num = kfifo_len(&display_q);
 
 	spin_unlock_irqrestore(&lock, flags);
 	return 0;
@@ -461,70 +429,50 @@ static int vh264mvc_vf_states(struct vframe_states *states, void *op_arg)
 
 void send_drop_cmd(void)
 {
-	int ready_cnt = 0;
-	int temp_get_ptr = get_ptr;
-	int temp_fill_ptr = fill_ptr;
+	int ready_cnt = kfifo_len(&display_q) - drop_count;
 
-	while (temp_get_ptr != temp_fill_ptr) {
-		if ((vfpool_idx[temp_get_ptr].view0_buf_id >= 0)
-			&& (vfpool_idx[temp_get_ptr].view1_buf_id >= 0)
-			&& (vfpool_idx[temp_get_ptr].view0_drop == 0)
-			&& (vfpool_idx[temp_get_ptr].view1_drop == 0))
-			ready_cnt++;
-		INCPTR(temp_get_ptr);
+	if (ready_cnt < 0) {
+		pr_info("error: ready_cnt < 0!\n");
+		ready_cnt = 0;
 	}
+
 	if (dbg_mode & 0x40) {
-		pr_info("ready_cnt is %d ; no_dropping_cnt is %d\n", ready_cnt,
-			   no_dropping_cnt);
+		pr_info("ready_cnt is %d ; no_dropping_cnt is %d\n", ready_cnt, no_dropping_cnt);
 	}
-	if ((no_dropping_cnt >= DROPPING_FIRST_WAIT)
-		&& (ready_cnt < drop_thread_hold))
+
+	if (no_dropping_cnt >= DROPPING_FIRST_WAIT && ready_cnt < drop_thread_hold)
 		WRITE_VREG(DROP_CONTROL, (1 << 31) | (drop_rate));
 	else
 		WRITE_VREG(DROP_CONTROL, 0);
 }
 
-#if 0
-int get_valid_frame(void)
-{
-	int ready_cnt = 0;
-	int temp_get_ptr = get_ptr;
-	int temp_fill_ptr = fill_ptr;
-
-	while (temp_get_ptr != temp_fill_ptr) {
-		if ((vfpool_idx[temp_get_ptr].view0_buf_id >= 0)
-			&& (vfpool_idx[temp_get_ptr].view1_buf_id >= 0)
-			&& (vfpool_idx[temp_get_ptr].view0_drop == 0)
-			&& (vfpool_idx[temp_get_ptr].view1_drop == 0))
-			ready_cnt++;
-		INCPTR(temp_get_ptr);
-	}
-	return ready_cnt;
-}
-#endif
 static struct vframe_s *vh264mvc_vf_peek(void *op_arg)
 {
+	struct mvc_info_s *mi;
 
-	if (get_ptr == fill_ptr)
+	if (!kfifo_peek(&display_q, &mi)) {
 		return NULL;
-	send_drop_cmd();
-	return &vfpool[get_ptr];
+	}
 
+	send_drop_cmd();
+
+	return &mi->vf;
 }
 
 static struct vframe_s *vh264mvc_vf_get(void *op_arg)
 {
-
+	struct mvc_info_s *mi;
 	struct vframe_s *vf;
 	int view0_buf_id;
 	int view1_buf_id;
 
-	if (get_ptr == fill_ptr)
+	if (!kfifo_get(&display_q, &mi)) {
 		return NULL;
+	}
 
-	view0_buf_id = vfpool_idx[get_ptr].view0_buf_id;
-	view1_buf_id = vfpool_idx[get_ptr].view1_buf_id;
-	vf = &vfpool[get_ptr];
+	view0_buf_id = mi->view0_buf_id;
+	view1_buf_id = mi->view1_buf_id;
+	vf = &mi->vf;
 
 	if ((view0_buf_id >= 0) && (view1_buf_id >= 0)) {
 		if (view_mode == 0 || view_mode == 1) {
@@ -564,14 +512,11 @@ static struct vframe_s *vh264mvc_vf_get(void *op_arg)
 		}
 	}
 	vf->type_original = vf->type;
-	if (((vfpool_idx[get_ptr].view0_drop != 0)
-		 || (vfpool_idx[get_ptr].view1_drop != 0))
-		&& ((no_dropping_cnt >= DROPPING_FIRST_WAIT)))
-		vf->frame_dirty = 1;
-	else
-		vf->frame_dirty = 0;
 
-	INCPTR(get_ptr);
+	if (mi->view0_drop != 0 || mi->view1_drop) {
+		drop_count--;
+		vf->frame_dirty = no_dropping_cnt >= DROPPING_FIRST_WAIT;
+	}
 
 	if (frame_width == 0)
 		frame_width = vh264mvc_amstream_dec_info.width;
@@ -581,40 +526,20 @@ static struct vframe_s *vh264mvc_vf_get(void *op_arg)
 	vf->width = frame_width;
 	vf->height = frame_height;
 
-	if ((no_dropping_cnt < DROPPING_FIRST_WAIT) && (vf->frame_dirty == 0))
+	if (no_dropping_cnt < DROPPING_FIRST_WAIT && vf->frame_dirty == 0)
 		no_dropping_cnt++;
-	return vf;
 
+	return vf;
 }
 
 static void vh264mvc_vf_put(struct vframe_s *vf, void *op_arg)
 {
+	const struct mvc_info_s *mi = &mvc_info_pool[vf->index];
 
 	if (vf_buf_init_flag == 0)
 		return;
-	if (vf->frame_dirty) {
 
-		vf->frame_dirty = 0;
-		dirty_frame_num++;
-		enable_recycle = 0;
-		if (dbg_mode & PUT_PRINT_ENABLE) {
-			pr_info("invalid: dirty_frame_num is !!! %d\n",
-				   dirty_frame_num);
-		}
-	} else {
-		INCPTR(putting_ptr);
-		while (dirty_frame_num > 0) {
-			INCPTR(putting_ptr);
-			dirty_frame_num--;
-		}
-		enable_recycle = 1;
-		if (dbg_mode & PUT_PRINT_ENABLE) {
-			pr_info("valid: dirty_frame_num is @@@ %d\n",
-				   dirty_frame_num);
-		}
-		/* send_drop_cmd(); */
-	}
-
+	kfifo_put(&recycle_q, mi);
 }
 
 static int vh264mvc_event_cb(int type, void *data, void *private_data)
@@ -728,90 +653,72 @@ static long init_canvas(int view_index, int refbuf_size, long dpb_size,
 }
 
 static int get_max_dec_frame_buf_size(int level_idc,
-		int max_reference_frame_num, int mb_width,
-		int mb_height)
+		int max_reference_frame_num, int picWidthInMbs,
+		int frameHeightInMbs)
 {
-	int pic_size = mb_width * mb_height * 384;
+	int maxDpbFrames = 0;
+	int maxDpbMbs = 0;
 
-	int size = 0;
-
+	/* maxDpbMbs values according to Rec. ITU-T H.264 (04/2013), Table A-1 */
 	switch (level_idc) {
-	case 9:
-		size = 152064;
-		break;
-	case 10:
-		size = 152064;
-		break;
-	case 11:
-		size = 345600;
-		break;
-	case 12:
-		size = 912384;
-		break;
-	case 13:
-		size = 912384;
-		break;
-	case 20:
-		size = 912384;
-		break;
-	case 21:
-		size = 1824768;
-		break;
-	case 22:
-		size = 3110400;
-		break;
-	case 30:
-		size = 3110400;
-		break;
-	case 31:
-		size = 6912000;
-		break;
-	case 32:
-		size = 7864320;
-		break;
-	case 40:
-		size = 12582912;
-		break;
-	case 41:
-		size = 12582912;
-		break;
-	case 42:
-		size = 13369344;
-		break;
-	case 50:
-		size = 42393600;
-		break;
-	case 51:
-		size = 70778880;
-		break;
-	default:
-		break;
-	}
-
-	size /= pic_size;
-	size = size + 1;	/* For MVC need onr more buffer */
-	if (max_reference_frame_num > size)
-		size = max_reference_frame_num;
-	if (size > DECODE_BUFFER_NUM_MAX)
-		size = DECODE_BUFFER_NUM_MAX;
-
-	return size;
-}
-
-int check_in_list(int pos, int *slot)
-{
-	int i;
-	int ret = 0;
-
-	for (i = 0; i < VF_POOL_SIZE; i++) {
-		if ((vfpool_idx[i].display_pos == pos)
-			&& (vfpool_idx[i].used == 0)) {
-			ret = 1;
-			*slot = vfpool_idx[i].slot;
+		case 9:
+		case 10:
+			maxDpbMbs = 396;
 			break;
-		}
+		case 11:
+			maxDpbMbs = 900;
+			break;
+		case 12:
+		case 13:
+		case 20:
+			maxDpbMbs = 2376;
+			break;
+		case 21:
+			maxDpbMbs = 4752;
+			break;
+		case 22:
+		case 30:
+			maxDpbMbs = 8100;
+			break;
+		case 31:
+			maxDpbMbs = 18000;
+			break;
+		case 32:
+			maxDpbMbs = 20480;
+			break;
+		case 40:
+		case 41:
+			maxDpbMbs = 32768;
+			break;
+		case 42:
+			maxDpbMbs = 34816;
+			break;
+		case 50:
+			maxDpbMbs = 110400;
+			break;
+		case 51:
+		case 52:
+			maxDpbMbs = 184320;
+			break;
+		default:
+			break;
 	}
-	return ret;
+
+	/* formulas according to constraints in Rec. ITU-T H.264 (04/2013), Section H.10.2.1 */
+	maxDpbFrames = min(MVC_SCALE_FACTOR * maxDpbMbs / (picWidthInMbs * frameHeightInMbs), DECODE_BUFFER_NUM_MAX);
+
+	if (max_reference_frame_num > (maxDpbFrames / MVC_SCALE_FACTOR)) {
+		// just in case constraint x isn't met ...
+		maxDpbFrames = min(max_reference_frame_num * MVC_SCALE_FACTOR, DECODE_BUFFER_NUM_MAX);
+	}
+
+	// we have to limit the number of buffers for the amlogic decoder limit
+	if (maxDpbFrames > AMLOGIC_DECODER_BUFFER_LIMIT) {
+		pr_info("WARNING: decoder buffer limit exceeded; needed %d buffers, available %d\n", maxDpbFrames, AMLOGIC_DECODER_BUFFER_LIMIT);
+		maxDpbFrames = AMLOGIC_DECODER_BUFFER_LIMIT;
+	}
+
+	return maxDpbFrames;
 }
 
 static void do_alloc_work(struct work_struct *work)
@@ -839,9 +746,6 @@ static void do_alloc_work(struct work_struct *work)
 
 		total_dec_frame_buffering[0] =
 			max_dec_frame_buffering[0] + dynamic_buf_num_margin;
-
-		mb_width = (mb_width + 3) & 0xfffffffc;
-		mb_height = (mb_height + 3) & 0xfffffffc;
 
 		dpb_size = mb_width * mb_height * 384;
 		ref_size = mb_width * mb_height * 96;
@@ -920,9 +824,6 @@ static void do_alloc_work(struct work_struct *work)
 		total_dec_frame_buffering[1] =
 			max_dec_frame_buffering[1] + dynamic_buf_num_margin;
 
-		mb_width = (mb_width + 3) & 0xfffffffc;
-		mb_height = (mb_height + 3) & 0xfffffffc;
-
 		dpb_size = mb_width * mb_height * 384;
 		ref_size = mb_width * mb_height * 96;
 		refbuf_size = ref_size * (max_reference_frame_num + 1) * 2;
@@ -984,6 +885,14 @@ static void mvc_set_rp(void) {
 	spin_unlock_irqrestore(&mvc_rp_lock, flags);
 }
 
+static void drop_buffer(int view_id, int buff_id)
+{
+	while (READ_VREG(BUFFER_RECYCLE) != 0)
+		;
+
+	WRITE_VREG(BUFFER_RECYCLE, (view_id << 8) | (buff_id + 1));
+}
+
 #ifdef HANDLE_h264mvc_IRQ
 static irqreturn_t vh264mvc_isr(int irq, void *dev_id)
 #else
@@ -1031,132 +940,103 @@ static void vh264mvc_isr(void)
 		}
 		if (dbg_mode & 0x10) {
 			if ((dbg_mode & 0x20) == 0) {
-				while (READ_VREG(BUFFER_RECYCLE) != 0)
-					;
-				WRITE_VREG(BUFFER_RECYCLE,
-						   (display_view_id << 8) |
-						   (display_buff_id + 1));
+				drop_buffer(display_view_id, display_buff_id);
+
 				display_buff_id = -1;
 				display_view_id = -1;
 				display_POC = -1;
 			}
 		} else {
-			unsigned char in_list_flag = 0;
+			struct mvc_info_s *mi;
 
-			int slot = 0;
-
-			in_list_flag = check_in_list(display_POC, &slot);
-
-			if ((dbg_mode & 0x40) && (drop_status)) {
-				pr_info
-				("drop_status:%dview_id=%d,buff_id=%d,",
-				 drop_status, display_view_id, display_buff_id);
-				 pr_info
-				("offset=%d, display_POC = %d,fill_ptr=0x%x\n",
-				 stream_offset, display_POC, fill_ptr);
+			if (drop_frame) {
+				// we're in "drop frame mode" because when called for the first image
+				// no frame was available
+				drop_buffer(display_view_id, display_buff_id);
+				drop_frame = 0;
+				break;
 			}
 
-			if ((in_list_flag) && (stream_offset != 0)) {
-				pr_info
-				("error case ,display_POC is %d, slot is %d\n",
-				 display_POC, slot);
-				in_list_flag = 0;
+			if (!kfifo_peek(&newframe_q, &mi)) {
+				// we're in "drop frame mode" now
+				// that should not happen, because we've 32 buffers in the queues but only
+				// 20 (DECODE_BUFFER_NUM_MAX + DISPLAY_BUFFER_NUM) of them can be used
+				// concurrently, so at least 12 buffers should always be available
+				pr_info("vh264mvc: not enough frame buffers available; shouldn't happen\n");
+				drop_buffer(display_view_id, display_buff_id);
+				drop_frame = 1;
+				break;
 			}
-			if (!in_list_flag) {
-				if (display_view_id == 0) {
-					vfpool_idx[fill_ptr].view0_buf_id =
-						display_buff_id;
-					view0_vfbuf_use[display_buff_id]++;
-					vfpool_idx[fill_ptr].stream_offset =
-						stream_offset;
-					vfpool_idx[fill_ptr].view0_drop =
-						drop_status;
-				}
-				if (display_view_id == 1) {
-					vfpool_idx[fill_ptr].view1_buf_id =
-						display_buff_id;
-					vfpool_idx[fill_ptr].view1_drop =
-						drop_status;
-					view1_vfbuf_use[display_buff_id]++;
-				}
-				vfpool_idx[fill_ptr].slot = fill_ptr;
-				vfpool_idx[fill_ptr].display_pos = display_POC;
 
-			} else {
-				if (display_view_id == 0) {
-					vfpool_idx[slot].view0_buf_id =
-						display_buff_id;
-					view0_vfbuf_use[display_buff_id]++;
-					vfpool_idx[slot].stream_offset =
-						stream_offset;
-					vfpool_idx[slot].view0_drop =
-						drop_status;
+			if (display_view_id == 0) {
+				mi->view0_buf_id = display_buff_id;
+				mi->stream_offset = stream_offset;
+				mi->view0_drop = drop_status;
+			} else if (display_view_id == 1) {
+				mi->view1_buf_id = display_buff_id;
+				mi->view1_drop = drop_status;
+			}
 
-				}
-				if (display_view_id == 1) {
-					vfpool_idx[slot].view1_buf_id =
-						display_buff_id;
-					view1_vfbuf_use[display_buff_id]++;
-					vfpool_idx[slot].view1_drop =
-						drop_status;
-				}
-				vf = &vfpool[slot];
+			if (mi->display_pos != display_POC) {
+				mi->slot = mi->vf.index;
+				mi->display_pos = display_POC;
+				break;
+			}
 
-				if (display_view_id == 0) {
-					vf->mem_handle =
+			if (!kfifo_get(&newframe_q, &mi)) {
+				pr_info("vh264mvc: new frame is gone!\n");
+				drop_buffer(0, mi->view0_buf_id);
+				drop_buffer(1, mi->view1_buf_id);
+				break;
+			}
+
+			vf = &mi->vf;
+
+			if (display_view_id == 0) {
+				vf->mem_handle =
 					decoder_bmmu_box_get_mem_handle(
 						mm_blk_handle,
 						VF_BUFFER_IDX(display_buff_id));
 
-				} else if (display_view_id == 1) {
-					vf->mem_head_handle =
+			} else if (display_view_id == 1) {
+				vf->mem_head_handle =
 					decoder_bmmu_box_get_mem_handle(
 						mm_blk_handle,
 						VF_BUFFER_IDX(display_buff_id));
 
-					vf->mem_handle =
+				vf->mem_handle =
 					decoder_bmmu_box_get_mem_handle(
 						mm_blk_handle,
 						VF_BUFFER_IDX(display_buff_id)
 						+ total_dec_frame_buffering[0]
 						+ 1);
-				}
-
-
-
-				if (vfpool_idx[slot].stream_offset == 0) {
-					pr_info
-					("error case, invalid stream offset\n");
-				}
-				if (pts_lookup_offset_us64
-					(PTS_TYPE_VIDEO,
-					 vfpool_idx[slot].stream_offset, &pts,
-					 &frame_size,
-					 0x10000, &pts_us64) == 0)
-					pts_valid = 1;
-				else
-					pts_valid = 0;
-				vf->pts = (pts_valid) ? pts : 0;
-				vf->pts_us64 = (pts_valid) ? pts_us64 : 0;
-				/* vf->pts =  vf->pts_us64 ? vf->pts_us64
-				 *   : vf->pts ;
-				 */
-				/* vf->pts =  vf->pts_us64; */
-				if (dbg_mode & 0x80)
-					pr_info("vf->pts:%d\n", vf->pts);
-				vfpool_idx[slot].used = 1;
-				INCPTR(fill_ptr);
-				set_frame_info(vf);
-
-				gvs->frame_dur = frame_dur;
-				vdec_count_info(gvs, 0,
-						vfpool_idx[slot].stream_offset);
-
-				vf_notify_receiver(PROVIDER_NAME,
-					VFRAME_EVENT_PROVIDER_VFRAME_READY,
-					NULL);
-
 			}
+
+			if (mi->stream_offset == 0) {
+				pr_info("error case, invalid stream offset\n");
+			}
+
+			pts_valid = pts_lookup_offset_us64(PTS_TYPE_VIDEO, mi->stream_offset, &pts,
+					&frame_size, 0x10000, &pts_us64) == 0 ? 1 : 0;
+
+			vf->pts = (pts_valid) ? pts : 0;
+			vf->pts_us64 = (pts_valid) ? pts_us64 : 0;
+
+			if (dbg_mode & 0x80)
+				pr_info("vf->pts:%d\n", vf->pts);
+
+			mi->used = 1;
+			set_frame_info(vf);
+
+			gvs->frame_dur = frame_dur;
+			vdec_count_info(gvs, 0, mi->stream_offset);
+
+			if (mi->view0_drop || mi->view1_drop) {
+				drop_count++;
+			}
+
+			kfifo_put(&display_q, mi);
+			vf_notify_receiver(PROVIDER_NAME, VFRAME_EVENT_PROVIDER_VFRAME_READY, NULL);
 		}
 		break;
 	case CMD_FATAL_ERROR:
@@ -1188,52 +1068,31 @@ static void vh264_mvc_set_clk(struct work_struct *work)
 static void vh264mvc_put_timer_func(unsigned long arg)
 {
 	struct timer_list *timer = (struct timer_list *)arg;
-
-	int valid_frame = 0;
+	struct mvc_info_s *mi;
 
 	mvc_set_rp();
 
-	if (enable_recycle == 0) {
-		if (dbg_mode & TIME_TASK_PRINT_ENABLE) {
-			/* valid_frame = get_valid_frame(); */
-			pr_info("dirty_frame_num is %d , valid frame is %d\n",
-				   dirty_frame_num, valid_frame);
+	while (kfifo_peek(&recycle_q, &mi) && READ_VREG(BUFFER_RECYCLE) == 0) {
+		int view0_buf_id = mi->view0_buf_id;
+		int view1_buf_id = mi->view1_buf_id;
 
+		if (view0_buf_id >= 0) {
+			WRITE_VREG(BUFFER_RECYCLE, (0 << 8) | (view0_buf_id + 1));
+			mi->view0_buf_id = -1;
+			mi->view0_drop = 0;
+		} else if (view1_buf_id >= 0) {
+			WRITE_VREG(BUFFER_RECYCLE, (1 << 8) | (view1_buf_id + 1));
+			mi->view1_buf_id = -1;
+			mi->view1_drop = 0;
 		}
-		/* goto RESTART; */
-	}
 
-	while ((putting_ptr != put_ptr) && (READ_VREG(BUFFER_RECYCLE) == 0)) {
-		int view0_buf_id = vfpool_idx[put_ptr].view0_buf_id;
-		int view1_buf_id = vfpool_idx[put_ptr].view1_buf_id;
+		if (mi->view0_buf_id == -1 && mi->view1_buf_id == -1) {
+			mi->display_pos = DISPLAY_INVALID_POS;
+			mi->used = 0;
 
-		if ((view0_buf_id >= 0) &&
-				(view0_vfbuf_use[view0_buf_id] == 1)) {
-			if (dbg_mode & 0x100) {
-				pr_info
-				("round 0: put_ptr is %d ;view0_buf_id is %d\n",
-				 put_ptr, view0_buf_id);
+			if (kfifo_get(&recycle_q, &mi)) {
+				kfifo_put(&newframe_q, mi);
 			}
-			WRITE_VREG(BUFFER_RECYCLE,
-					   (0 << 8) | (view0_buf_id + 1));
-			view0_vfbuf_use[view0_buf_id] = 0;
-			vfpool_idx[put_ptr].view0_buf_id = -1;
-			vfpool_idx[put_ptr].view0_drop = 0;
-		} else if ((view1_buf_id >= 0)
-				   && (view1_vfbuf_use[view1_buf_id] == 1)) {
-			if (dbg_mode & 0x100) {
-				pr_info
-				("round 1: put_ptr is %d ;view1_buf_id %d==\n",
-				 put_ptr, view1_buf_id);
-			}
-			WRITE_VREG(BUFFER_RECYCLE,
-					   (1 << 8) | (view1_buf_id + 1));
-			view1_vfbuf_use[view1_buf_id] = 0;
-			vfpool_idx[put_ptr].display_pos = DISPLAY_INVALID_POS;
-			vfpool_idx[put_ptr].view1_buf_id = -1;
-			vfpool_idx[put_ptr].view1_drop = 0;
-			vfpool_idx[put_ptr].used = 0;
-			INCPTR(put_ptr);
 		}
 	}
 
@@ -1253,7 +1112,7 @@ int vh264mvc_dec_status(struct vdec_s *vdec, struct vdec_info *vstatus)
 		vstatus->frame_rate = 96000 / frame_dur;
 	else
 		vstatus->frame_rate = -1;
-	vstatus->error_count = READ_VREG(AV_SCRATCH_D);
+	vstatus->error_count = READ_VREG(DECODE_ERROR_CNT);
 	vstatus->status = stat;
 	vstatus->bit_rate = gvs->bit_rate;
 	vstatus->frame_dur = frame_dur;
@@ -1444,10 +1303,6 @@ static int vh264mvc_local_init(void)
 	display_view_id = -1;
 	display_POC = -1;
 	no_dropping_cnt = 0;
-	init_drop_cnt = INIT_DROP_FRAME_CNT;
-
-	for (i = 0; i < INIT_DROP_FRAME_CNT; i++)
-		init_drop_frame_id[i] = 0;
 
 #ifdef DEBUG_PTS
 	pts_missed = 0;
@@ -1475,27 +1330,31 @@ static int vh264mvc_local_init(void)
 
 	max_dec_frame_buffering[0] = -1;
 	max_dec_frame_buffering[1] = -1;
-	fill_ptr = get_ptr = put_ptr = putting_ptr = 0;
-	dirty_frame_num = 0;
 
-	for (i = 0; i < DECODE_BUFFER_NUM_MAX; i++) {
-		view0_vfbuf_use[i] = 0;
-		view1_vfbuf_use[i] = 0;
+	INIT_KFIFO(newframe_q);
+	INIT_KFIFO(display_q);
+	INIT_KFIFO(recycle_q);
+
+	for (i = 0; i < MVC_INFO_POOL_SIZE; i++) {
+		struct mvc_info_s *mi = &mvc_info_pool[i];
+
+		memset(mi, 0, sizeof(struct mvc_info_s));
+
+		mi->vf.index = i;
+		mi->display_pos = DISPLAY_INVALID_POS;
+		mi->view0_buf_id = DISPLAY_INVALID_POS;
+		mi->view1_buf_id = -1;
+		mi->view0_drop = 0;
+		mi->view1_drop = 0;
+		mi->used = 0;
+
+		kfifo_put(&newframe_q, mi);
 	}
 
-	for (i = 0; i < VF_POOL_SIZE; i++) {
-		vfpool_idx[i].display_pos = -1;
-		vfpool_idx[i].view0_buf_id = DISPLAY_INVALID_POS;
-		vfpool_idx[i].view1_buf_id = -1;
-		vfpool_idx[i].view0_drop = 0;
-		vfpool_idx[i].view1_drop = 0;
-		vfpool_idx[i].used = 0;
-	}
-	for (i = 0; i < VF_POOL_SIZE; i++) {
-		memset(&vfpool[i], 0, sizeof(struct vframe_s));
-		vfpool[i].index = i;
-	}
 	init_vf_buf();
+
+	drop_frame = 0;
+	drop_count = 0;
 
 	if (mm_blk_handle) {
 		decoder_bmmu_box_free(mm_blk_handle);
@@ -1676,6 +1535,10 @@ static int vh264mvc_stop(void)
 		mm_blk_handle = NULL;
 	}
 	uninit_vf_buf();
+
+	drop_frame = 0;
+	drop_count = 0;
+
 	return 0;
 }
 

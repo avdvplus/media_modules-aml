@@ -60,36 +60,48 @@ static const char *type_to_str(int t)
 	}
 }
 
+static u32 get_pts_type(struct stream_buf_s *stbuf)
+{
+	u32 pts_type;
+
+	if (has_hevc_vdec() && (stbuf->type == BUF_TYPE_HEVC)) {
+		pts_type = PTS_TYPE_HEVC;
+	} else {
+		if (stbuf->type == BUF_TYPE_VIDEO) {
+			pts_type = PTS_TYPE_VIDEO;
+		} else if (stbuf->type == BUF_TYPE_AUDIO) {
+			pts_type = PTS_TYPE_AUDIO;
+		} else if (stbuf->type == BUF_TYPE_SUBTITLE) {
+			pts_type = PTS_TYPE_MAX;
+		} else {
+			pts_type = PTS_TYPE_MAX + 1;
+		}
+	}
+
+	return pts_type;
+}
+
 static int stream_buffer_init(struct stream_buf_s *stbuf, struct vdec_s *vdec)
 {
 	int ret = 0;
 	u32 flags = CODEC_MM_FLAGS_DMA;
+	u32 pts_type;
 	bool is_secure = 0;
 	u32 addr = 0;
 	int pages = 0;
 	u32 size;
-	u32 pts_type;
 
 	if (stbuf->buf_start)
 		return 0;
 
+	pts_type = get_pts_type(stbuf);
+	if (pts_type > PTS_TYPE_MAX) {
+		pr_info("unable to get pts type for stbuf type %d\n", stbuf->type);
+		return -EINVAL;
+	}
+
 	snprintf(stbuf->name, sizeof(stbuf->name),
 		"%s-%d", MEM_NAME, vdec->id);
-
-	if (has_hevc_vdec() && (stbuf->type == BUF_TYPE_HEVC))
-		pts_type = PTS_TYPE_HEVC;
-	else
-		/* #endif */
-		if (stbuf->type == BUF_TYPE_VIDEO)
-			pts_type = PTS_TYPE_VIDEO;
-		else if (stbuf->type == BUF_TYPE_AUDIO)
-			pts_type = PTS_TYPE_AUDIO;
-		else if (stbuf->type == BUF_TYPE_SUBTITLE)
-			pts_type = PTS_TYPE_MAX;
-		else {
-			ret = -EINVAL;
-			goto err;
-		}
 
 	if (stbuf->ext_buf_addr) {
 		addr	= stbuf->ext_buf_addr;
@@ -121,6 +133,14 @@ static int stream_buffer_init(struct stream_buf_s *stbuf, struct vdec_s *vdec)
 		goto err;
 	}
 
+	if (stbuf->use_ptsserv && pts_type < PTS_TYPE_MAX) {
+		ret = pts_start(pts_type);
+		if (ret < 0) {
+			pr_info("stream_buffer_init: pts_start failed\n");
+			goto err;
+		}
+	}
+
 	atomic_set(&stbuf->payload, 0);
 	init_waitqueue_head(&stbuf->wq);
 
@@ -149,14 +169,6 @@ static int stream_buffer_init(struct stream_buf_s *stbuf, struct vdec_s *vdec)
 	stbuf->flag |= BUF_FLAG_ALLOC;
 	stbuf->flag |= BUF_FLAG_IN_USE;
 
-	if (pts_type < PTS_TYPE_MAX) {
-		ret = pts_start(pts_type);
-		if (ret < 0) {
-			pr_info("stream_buffer_init: pts_start failed\n");
-			goto err;
-		}
-	}
-
 	pr_info("[%d]: [%s-%s] addr: %lx, size: %x, thrRW: %d, extbuf: %d, secure: %d\n",
 		stbuf->id, type_to_str(stbuf->type), stbuf->name,
 		stbuf->buf_start, stbuf->buf_size,
@@ -173,10 +185,14 @@ err:
 
 static void stream_buffer_release(struct stream_buf_s *stbuf)
 {
-	u32 pts_type;
+	u32 pts_type = get_pts_type(stbuf);
 
 	if (stbuf->write_thread)
 		threadrw_release(stbuf);
+
+	if (stbuf->use_ptsserv && pts_type < PTS_TYPE_MAX) {
+		pts_stop(get_pts_type(stbuf));
+	}
 
 	if (stbuf->flag & BUF_FLAG_ALLOC && stbuf->buf_start) {
 		if (!stbuf->ext_buf_addr)
@@ -188,20 +204,6 @@ static void stream_buffer_release(struct stream_buf_s *stbuf)
 		stbuf->is_secure	= false;
 	}
 	stbuf->flag &= ~BUF_FLAG_IN_USE;
-
-	if (has_hevc_vdec() && (stbuf->type == BUF_TYPE_HEVC))
-		pts_type = PTS_TYPE_VIDEO;
-	else if (stbuf->type == BUF_TYPE_VIDEO)
-		pts_type = PTS_TYPE_VIDEO;
-	else if (stbuf->type == BUF_TYPE_AUDIO)
-		pts_type = PTS_TYPE_AUDIO;
-	else if (stbuf->type == BUF_TYPE_SUBTITLE) {
-		stbuf->flag &= ~BUF_FLAG_PARSER;
-		return;
-	} else
-		return;
-
-	pts_stop(PTS_TYPE_VIDEO);
 }
 
 static int get_free_space(struct stream_buf_s *stbuf)
