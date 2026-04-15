@@ -165,6 +165,7 @@ static struct dec_sysinfo vvc1_amstream_dec_info;
 
 static int force_frameint = 0;
 static int app_force_interlaced = 0;
+static int app_force_progressive = 0;
 
 struct frm_s {
 	int state;
@@ -545,10 +546,13 @@ static irqreturn_t vvc1_isr(int irq, void *dev_id)
 		if (vvc1_amstream_dec_info.rate == 0)
 			vvc1_amstream_dec_info.rate = PTS2DUR(frm.rate);
 
-		// Priority: application forced interlaced > hardware detection > force_frameint
+		// Priority: application forced interlaced > application forced progressive > hardware detection > force_frameint
 		if (app_force_interlaced) {\t/* application forced interlaced */
 			pr_debug("vvc1: using application forced interlaced mode\n");
 			// Process as interlaced
+		} else if (app_force_progressive) {\t/* application forced progressive */
+			pr_debug("vvc1: using application forced progressive mode\n");
+			// Process as progressive
 		} else if ((reg & INTERLACE_FLAG) && ! force_frameint) {\t/* field interlace */
 			// Process as hardware detected interlaced
 		} else {\t/* progressive or frame interlace */
@@ -556,7 +560,7 @@ static irqreturn_t vvc1_isr(int irq, void *dev_id)
 		}
 
 		// Original interlaced processing logic
-		if (app_force_interlaced || ((reg & INTERLACE_FLAG) && ! force_frameint)) {\t/* field interlace */
+		if (app_force_interlaced || ((!app_force_progressive) && (reg & INTERLACE_FLAG) && ! force_frameint)) {\t/* field interlace */
 			if (kfifo_get(&newframe_q, &vf) == 0) {
 				pr_info
 				("fatal error, no available buffer slot.");
@@ -1119,6 +1123,12 @@ static void vvc1_local_init(bool is_reset)
 	app_force_interlaced = ((unsigned long)vvc1_amstream_dec_info.param & 0x80000000) ? 1 : 0;
 	if (app_force_interlaced) {
 		pr_info("vvc1: app force interlaced mode\n");
+	}
+
+	// Parse progressive flag from application
+	app_force_progressive = ((unsigned long)vvc1_amstream_dec_info.param & 0x40000000) ? 1 : 0;
+	if (app_force_progressive) {
+		pr_info("vvc1: app force progressive mode\n");
 	}
 
 	unstable_pts = (((unsigned long) vvc1_amstream_dec_info.param & 0x40) >> 6);
