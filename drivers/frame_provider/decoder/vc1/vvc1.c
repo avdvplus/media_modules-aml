@@ -164,6 +164,7 @@ static DEFINE_SPINLOCK(lock);
 static struct dec_sysinfo vvc1_amstream_dec_info;
 
 static int force_frameint = 0;
+static int app_force_interlaced = 0;
 
 struct frm_s {
 	int state;
@@ -544,7 +545,18 @@ static irqreturn_t vvc1_isr(int irq, void *dev_id)
 		if (vvc1_amstream_dec_info.rate == 0)
 			vvc1_amstream_dec_info.rate = PTS2DUR(frm.rate);
 
-		if ((reg & INTERLACE_FLAG) && ! force_frameint) {	/* field interlace */
+		// Priority: application forced interlaced > hardware detection > force_frameint
+		if (app_force_interlaced) {\t/* application forced interlaced */
+			pr_debug("vvc1: using application forced interlaced mode\n");
+			// Process as interlaced
+		} else if ((reg & INTERLACE_FLAG) && ! force_frameint) {\t/* field interlace */
+			// Process as hardware detected interlaced
+		} else {\t/* progressive or frame interlace */
+			// Process as progressive
+		}
+
+		// Original interlaced processing logic
+		if (app_force_interlaced || ((reg & INTERLACE_FLAG) && ! force_frameint)) {\t/* field interlace */
 			if (kfifo_get(&newframe_q, &vf) == 0) {
 				pr_info
 				("fatal error, no available buffer slot.");
@@ -1102,6 +1114,12 @@ static void vvc1_local_init(bool is_reset)
 	vvc1_ratio = (vvc1_amstream_dec_info.ratio >> DISP_RATIO_ASPECT_RATIO_BIT);
 
 	avi_flag = (unsigned long) vvc1_amstream_dec_info.param & 0x01;
+
+	// Parse interlaced flag from application
+	app_force_interlaced = ((unsigned long)vvc1_amstream_dec_info.param & 0x80000000) ? 1 : 0;
+	if (app_force_interlaced) {
+		pr_info("vvc1: app force interlaced mode\n");
+	}
 
 	unstable_pts = (((unsigned long) vvc1_amstream_dec_info.param & 0x40) >> 6);
 	if (unstable_pts_debug == 1) {
