@@ -547,20 +547,20 @@ static irqreturn_t vvc1_isr(int irq, void *dev_id)
 			vvc1_amstream_dec_info.rate = PTS2DUR(frm.rate);
 
 		// Priority: application forced interlaced > application forced progressive > hardware detection > force_frameint
-		if (app_force_interlaced) {\t/* application forced interlaced */
+		if (app_force_interlaced) {/* application forced interlaced */
 			pr_debug("vvc1: using application forced interlaced mode\n");
 			// Process as interlaced
-		} else if (app_force_progressive) {\t/* application forced progressive */
+		} else if (app_force_progressive) {/* application forced progressive */
 			pr_debug("vvc1: using application forced progressive mode\n");
 			// Process as progressive
-		} else if ((reg & INTERLACE_FLAG) && ! force_frameint) {\t/* field interlace */
+		} else if ((reg & INTERLACE_FLAG) && ! force_frameint) {/* field interlace */
 			// Process as hardware detected interlaced
-		} else {\t/* progressive or frame interlace */
+		} else {/* progressive or frame interlace */
 			// Process as progressive
 		}
 
 		// Original interlaced processing logic
-		if (app_force_interlaced || ((!app_force_progressive) && (reg & INTERLACE_FLAG) && ! force_frameint)) {\t/* field interlace */
+		if (app_force_interlaced || ((!app_force_progressive) && (reg & INTERLACE_FLAG) && ! force_frameint)) {/* field interlace */
 			if (kfifo_get(&newframe_q, &vf) == 0) {
 				pr_info
 				("fatal error, no available buffer slot.");
