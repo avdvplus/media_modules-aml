@@ -136,6 +136,7 @@ static unsigned int decode_timeout_val = 200;
 #define DEC_CONTROL_FLAG_FORCE_2500_704_576_INTERLACE  0x0008
 #define DEC_CONTROL_FLAG_FORCE_2500_544_576_INTERLACE  0x0010
 #define DEC_CONTROL_FLAG_FORCE_2500_480_576_INTERLACE  0x0020
+#define DEC_CONTROL_FLAG_KEEP_PROG_FRAME               0x0040
 #define DEC_CONTROL_INTERNAL_MASK                      0x0fff
 #define DEC_CONTROL_FLAG_FORCE_SEQ_INTERLACE           0x1000
 
@@ -231,6 +232,11 @@ struct vdec_mpeg12_hw_s {
 	u32 frame_width;
 	u32 frame_height;
 	u32 frame_dur;
+	u32 keep_prog_telecine;
+	u32 keep_prog_last_rff;
+	u32 keep_prog_alt;
+	u32 keep_prog_rem;
+	u32 keep_prog_active;
 	u32 frame_prog;
 	u32 seqinfo;
 	u32 ctx_valid;
@@ -1525,7 +1531,7 @@ static void userdata_push_do_work(struct work_struct *work)
 			break;
 	}
 #ifdef PRINT_HEAD_INFO
-	pr_info("ref:%d, type:%s, ext:%d, first:%d, data_length:%d\n",
+	pr_debug("ref:%d, type:%s, ext:%d, first:%d, data_length:%d\n",
 		reference, ptype_str,
 		(reg >> 30),
 		(reg >> 28)&0x3,
@@ -1612,6 +1618,7 @@ static int prepare_display_buf(struct vdec_mpeg12_hw_s *hw,
 	struct vframe_s *vf = NULL;
 	u32 index = pic->index;
 	u32 info = pic->buffer_info;
+	u32 frame_prog;
 	struct vdec_s *vdec = hw_to_vdec(hw);
 	struct aml_vcodec_ctx * v4l2_ctx = hw->v4l2_ctx;
 	ulong nv_order = VIDTYPE_VIU_NV21;
@@ -1633,13 +1640,17 @@ static int prepare_display_buf(struct vdec_mpeg12_hw_s *hw,
 
 	user_data_ready_notify(hw, pic->pts, pic->pts_valid);
 
-	if (hw->frame_prog & PICINFO_PROG) {
+	frame_prog = (hw->dec_control & DEC_CONTROL_FLAG_KEEP_PROG_FRAME) ?
+		(info & PICINFO_PROG) : hw->frame_prog;
+
+	if (frame_prog & PICINFO_PROG) {
 		field_num = 1;
 		type |= VIDTYPE_PROGRESSIVE | VIDTYPE_VIU_FIELD | nv_order;
 	} else {
 #ifdef INTERLACE_SEQ_ALWAYS
 		/* once an interlace seq, force interlace, to make di easy. */
-		hw->dec_control |= DEC_CONTROL_FLAG_FORCE_SEQ_INTERLACE;
+		if (!(hw->dec_control & DEC_CONTROL_FLAG_KEEP_PROG_FRAME))
+			hw->dec_control |= DEC_CONTROL_FLAG_FORCE_SEQ_INTERLACE;
 #endif
 		hw->frame_rpt_state = FRAME_REPEAT_NONE;
 
@@ -1649,6 +1660,8 @@ static int prepare_display_buf(struct vdec_mpeg12_hw_s *hw,
 	}
 
 	for (i = 0; i < field_num; i++) {
+		u32 keep_prog_cur = 0;
+
 		if (kfifo_get(&hw->newframe_q, &vf) == 0) {
 			debug_print(DECODE_ID(hw), PRINT_FLAG_ERROR,
 				"fatal error, no available buffer slot.");
@@ -1690,6 +1703,17 @@ static int prepare_display_buf(struct vdec_mpeg12_hw_s *hw,
 					else
 						vf->duration *= 2;
 				}
+				vf->duration_pulldown = 0;
+			} else if ((hw->dec_control &
+				DEC_CONTROL_FLAG_KEEP_PROG_FRAME) &&
+				hw->keep_prog_telecine) {
+				u32 num = 2 * hw->frame_dur +
+					(hw->frame_dur >> 1) +
+					hw->keep_prog_rem;
+
+				vf->duration = num / 2;
+				hw->keep_prog_rem = num % 2;
+				keep_prog_cur = 1;
 				vf->duration_pulldown = 0;
 			} else {
 				vf->duration_pulldown =
@@ -1743,6 +1767,25 @@ static int prepare_display_buf(struct vdec_mpeg12_hw_s *hw,
 				(const struct vframe_s *)vf);
 			spin_unlock_irqrestore(&hw->lock, flags);
 		} else {
+			hw->keep_prog_active = keep_prog_cur;
+			if ((field_num == 1) &&
+				(hw->dec_control &
+				 DEC_CONTROL_FLAG_KEEP_PROG_FRAME) &&
+				!((hw->seqinfo & SEQINFO_EXT_AVAILABLE) &&
+				  (hw->seqinfo & SEQINFO_PROG))) {
+				u32 rff = (info & PICINFO_RPT_FIRST) ? 1 : 0;
+
+				if (hw->keep_prog_last_rff == rff) {
+					hw->keep_prog_alt = 0;
+					hw->keep_prog_telecine = 0;
+					hw->keep_prog_rem = 0;
+				} else if (hw->keep_prog_alt < 3) {
+					hw->keep_prog_alt++;
+					if (hw->keep_prog_alt >= 3)
+						hw->keep_prog_telecine = 1;
+				}
+				hw->keep_prog_last_rff = rff;
+			}
 			debug_print(DECODE_ID(hw), PRINT_FLAG_TIMEINFO,
 				"%s, vf: %lx, num[%d]: %d(%c), dur: %d, type: %x, pts: %d(%lld)\n",
 				__func__, (ulong)vf, i, hw->disp_num, GET_SLICE_TYPE(info),
@@ -2178,7 +2221,8 @@ static irqreturn_t vmpeg12_isr_thread_fn(struct vdec_s *vdec, int irq)
 
 		hw->frame_prog = info & PICINFO_PROG;
 		if ((seqinfo & SEQINFO_EXT_AVAILABLE) &&
-			((seqinfo & SEQINFO_PROG) == 0))
+			((seqinfo & SEQINFO_PROG) == 0) &&
+			!(hw->dec_control & DEC_CONTROL_FLAG_KEEP_PROG_FRAME))
 			hw->frame_prog = 0;
 		force_interlace_check(hw);
 
@@ -2686,21 +2730,27 @@ static int vmmpeg12_dec_status(struct vdec_s *vdec, struct vdec_info *vstatus)
 {
 	struct vdec_mpeg12_hw_s *hw =
 	(struct vdec_mpeg12_hw_s *)vdec->private;
+	u32 frame_dur;
 
 	if (!hw)
 		return -1;
 
+	frame_dur = hw->frame_dur;
+	if ((hw->dec_control & DEC_CONTROL_FLAG_KEEP_PROG_FRAME) &&
+		hw->keep_prog_active && frame_dur)
+		frame_dur = (2 * frame_dur + (frame_dur >> 1) + 1) / 2;
+
 	vstatus->frame_width = hw->frame_width;
 	vstatus->frame_height = hw->frame_height;
-	if (hw->frame_dur != 0)
-		vstatus->frame_rate = ((96000 * 10 / hw->frame_dur) % 10) < 5 ?
-		                    96000 / hw->frame_dur : (96000 / hw->frame_dur +1);
+	if (frame_dur != 0)
+		vstatus->frame_rate = ((96000 * 10 / frame_dur) % 10) < 5 ?
+		                    96000 / frame_dur : (96000 / frame_dur +1);
 	else
 		vstatus->frame_rate = -1;
 	vstatus->error_count = READ_VREG(AV_SCRATCH_C);
 	vstatus->status = hw->stat;
 	vstatus->bit_rate = hw->gvs.bit_rate;
-	vstatus->frame_dur = hw->frame_dur;
+	vstatus->frame_dur = frame_dur;
 	vstatus->frame_data = hw->gvs.frame_data;
 	vstatus->total_data = hw->gvs.total_data;
 	vstatus->frame_count = hw->gvs.frame_count;
@@ -3212,6 +3262,11 @@ static void vmpeg12_local_init(struct vdec_mpeg12_hw_s *hw)
 	hw->eos = 0;
 	hw->frame_width = hw->frame_height = 0;
 	hw->frame_dur = hw->frame_prog = 0;
+	hw->keep_prog_telecine = 0;
+	hw->keep_prog_last_rff = 2;
+	hw->keep_prog_alt = 0;
+	hw->keep_prog_rem = 0;
+	hw->keep_prog_active = 0;
 	hw->frame_force_skip_flag = 0;
 	hw->wait_buffer_counter = 0;
 	hw->first_i_frame_ready = 0;
@@ -3637,7 +3692,7 @@ static int ammvdec_mpeg12_probe(struct platform_device *pdev)
 
 	hw = vzalloc(sizeof(struct vdec_mpeg12_hw_s));
 	if (hw == NULL) {
-		pr_info("\nammvdec_mpeg12 decoder driver alloc failed\n");
+		pr_err("\nammvdec_mpeg12 decoder driver alloc failed\n");
 		return -ENOMEM;
 	}
 
@@ -3735,7 +3790,7 @@ static int ammvdec_mpeg12_probe(struct platform_device *pdev)
 		hw->tvp_flag);
 
 	if (vmpeg12_init(hw) < 0) {
-		pr_info("ammvdec_mpeg12 init failed.\n");
+		pr_err("ammvdec_mpeg12 init failed.\n");
 		if (hw) {
 			vfree(hw);
 			hw = NULL;
@@ -3910,7 +3965,7 @@ static int __init ammvdec_mpeg12_driver_init_module(void)
 	pr_info("ammvdec_mpeg12 module init\n");
 
 	if (platform_driver_register(&ammvdec_mpeg12_driver)) {
-		pr_info("failed to register ammvdec_mpeg12 driver\n");
+		pr_err("failed to register ammvdec_mpeg12 driver\n");
 		return -ENODEV;
 	}
 	vcodec_profile_register(&ammvdec_mpeg12_profile);

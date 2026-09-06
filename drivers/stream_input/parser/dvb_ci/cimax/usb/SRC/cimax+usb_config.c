@@ -42,7 +42,6 @@
 
 #include <linux/ctype.h>
 
-#define DEBUG
 #include <linux/printk.h>
 
 /******************************************************************************

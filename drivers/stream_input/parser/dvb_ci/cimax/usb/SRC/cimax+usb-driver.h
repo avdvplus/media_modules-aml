@@ -171,7 +171,6 @@
 #undef info
 #undef warn
 
-#define DEBUG
 
 #ifdef DEBUG
 #define dbg(format, arg...) pr_debug("cimax+usb: %s> " format "\n" , \

@@ -14,7 +14,6 @@
   * more details.
   *
   */
-#define DEBUG
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/types.h>
@@ -181,7 +180,7 @@ static u32 mv_buf_dynamic_alloc;
  *	0x300, if > 720p,  use mode 4, else use mode 1;
  *	0x2000,if > 2160p, use mode 4, else use mode 0;
  */
-static u32 double_write_mode = 0x3;
+static u32 double_write_mode;
 
 #define DRIVER_NAME "amvdec_vp9"
 #define DRIVER_HEADER_NAME "amvdec_vp9_header"
@@ -1027,6 +1026,9 @@ struct vp9_fence_vf_t {
 	struct vframe_s *fence_vf[VF_POOL_SIZE];
 };
 
+#define VP9_HDR10P_AUX_SIZE 1024
+#define VP9_HDR10P_SEI_HEAD 12
+
 struct VP9Decoder_s {
 #ifdef MULTI_INSTANCE_SUPPORT
 	unsigned char index;
@@ -1254,6 +1256,7 @@ struct VP9Decoder_s {
 	dma_addr_t rdma_phy_adr;
 	unsigned *rdma_adr;
 	struct trace_decoder_name trace;
+	unsigned char hdr10p_aux[VP9_HDR10P_AUX_SIZE];
 };
 
 static int vp9_print(struct VP9Decoder_s *pbi,
@@ -2599,7 +2602,7 @@ int vp9_bufmgr_process(struct VP9Decoder_s *pbi, union param_u *params)
 		if (get_mv_buf(pbi,
 			&pool->frame_bufs[cm->new_fb_idx].
 			buf) < 0) {
-			pr_info("get_mv_buf fail\r\n");
+			pr_err("get_mv_buf fail\r\n");
 			return -1;
 		}
 		if (debug & VP9_DEBUG_BUFMGR_DETAIL)
@@ -2636,7 +2639,7 @@ int vp9_bufmgr_process(struct VP9Decoder_s *pbi, union param_u *params)
 		int frame_to_show;
 		unsigned long flags;
 		if (frame_to_show_idx >= REF_FRAMES) {
-			pr_info("frame_to_show_idx %d exceed max index\r\n",
+			pr_debug("frame_to_show_idx %d exceed max index\r\n",
 					frame_to_show_idx);
 			return -1;
 		}
@@ -5619,7 +5622,7 @@ static void init_pic_list(struct VP9Decoder_s *pbi)
 				HEADER_BUFFER_IDX(i), header_size,
 				DRIVER_HEADER_NAME,
 				&buf_addr) < 0) {
-				pr_info("%s malloc compress header failed %d\n",
+				pr_err("%s malloc compress header failed %d\n",
 				DRIVER_HEADER_NAME, i);
 				pbi->fatal_error |= DECODER_FATAL_ERROR_NO_MEM;
 				return;
@@ -7424,6 +7427,14 @@ static void set_frame_info(struct VP9Decoder_s *pbi, struct vframe_s *vf)
 
 			vf->hdr10p_data_size = pbi->chunk->hdr10p_data_size;
 			vf->hdr10p_data_buf = new_buf;
+			pbi->video_signal_type = (1 << 29)
+					| (5 << 26)
+					| (0 << 25)
+					| (1 << 24)
+					| (9 << 16)
+					| (0x30 << 8)
+					| (9 << 0);
+			vf->signal_type = pbi->video_signal_type;
 		} else {
 			vp9_print(pbi, 0, "%s:hdr10p data vzalloc size(%d) fail\n",
 				__func__, pbi->chunk->hdr10p_data_size);
@@ -7431,7 +7442,7 @@ static void set_frame_info(struct VP9Decoder_s *pbi, struct vframe_s *vf)
 			vf->hdr10p_data_buf = new_buf;
 		}
 
-		vfree(pbi->chunk->hdr10p_data_buf);
+		kfree(pbi->chunk->hdr10p_data_buf);
 		pbi->chunk->hdr10p_data_buf = NULL;
 		pbi->chunk->hdr10p_data_size = 0;
 	}
@@ -7617,6 +7628,41 @@ static int vvp9_event_cb(int type, void *data, void *private_data)
 			req->req_result[0] = vdec_secure(hw_to_vdec(pbi));
 		else
 			req->req_result[0] = 0xffffffff;
+	} else if (type & VFRAME_EVENT_RECEIVER_GET_AUX_DATA) {
+		struct provider_aux_req_s *req =
+			(struct provider_aux_req_s *)data;
+		u32 size = req->vf ? req->vf->hdr10p_data_size : 0;
+		u32 head = VP9_HDR10P_SEI_HEAD + size / 0xff;
+		u32 sei_size = head - 8 + size;
+		u32 rem = size;
+		u32 pos = 11;
+		unsigned char *aux = pbi->hdr10p_aux;
+
+		req->aux_buf = NULL;
+		req->aux_size = 0;
+		req->dv_enhance_exist = 0;
+		if (req->vf && req->vf->hdr10p_data_buf && size > 0 &&
+			head + size <= VP9_HDR10P_AUX_SIZE) {
+			aux[0] = (sei_size >> 24) & 0xff;
+			aux[1] = (sei_size >> 16) & 0xff;
+			aux[2] = (sei_size >> 8) & 0xff;
+			aux[3] = sei_size & 0xff;
+			aux[4] = 0x02;
+			aux[5] = 0x00;
+			aux[6] = 0x00;
+			aux[7] = 0x00;
+			aux[8] = ((39 << 9) >> 8) & 0xff;
+			aux[9] = 0x00;
+			aux[10] = 0x04;
+			while (rem >= 0xff) {
+				aux[pos++] = 0xff;
+				rem -= 0xff;
+			}
+			aux[pos++] = rem;
+			memcpy(aux + pos, req->vf->hdr10p_data_buf, size);
+			req->aux_buf = (char *)aux;
+			req->aux_size = pos + size;
+		}
 	}
 
 	return 0;
@@ -9003,7 +9049,7 @@ static irqreturn_t vvp9_isr_thread_fn(int irq, void *data)
 	int i;
 
 	/*if (pbi->wait_buf)
-	 *	pr_info("set wait_buf to 0\r\n");
+	 *	pr_debug("set wait_buf to 0\r\n");
 	 */
 
 	if (dec_status == VP9_HEAD_PARSER_DONE) {
@@ -9533,7 +9579,7 @@ static void vvp9_put_timer_func(unsigned long arg)
 				/* receiver has no buffer to recycle */
 				/*if ((state == RECEIVER_INACTIVE) &&
 				 *	(kfifo_is_empty(&pbi->display_q))) {
-				 *pr_info("vp9 something error,need reset\n");
+				 *pr_err("vp9 something error,need reset\n");
 				 *}
 				 */
 			}
@@ -9633,20 +9679,20 @@ static void vvp9_put_timer_func(unsigned long arg)
 		int i;
 		u32 sum = 0;
 
-		pr_info("pop stream 0x%x shorts\r\n", pop_shorts);
+		pr_debug("pop stream 0x%x shorts\r\n", pop_shorts);
 		for (i = 0; i < pop_shorts; i++) {
 			u32 data =
 			(READ_HREG(HEVC_SHIFTED_DATA) >> 16);
 			WRITE_HREG(HEVC_SHIFT_COMMAND,
 			(1<<7)|16);
 			if ((i & 0xf) == 0)
-				pr_info("%04x:", i);
-			pr_info("%04x ", data);
+				pr_debug("%04x:", i);
+			pr_debug("%04x ", data);
 			if (((i + 1) & 0xf) == 0)
-				pr_info("\r\n");
+				pr_debug("\r\n");
 			sum += data;
 		}
-		pr_info("\r\nsum = %x\r\n", sum);
+		pr_debug("\r\nsum = %x\r\n", sum);
 		pop_shorts = 0;
 	}
 	if (dbg_cmd != 0) {
@@ -9794,24 +9840,24 @@ static void vvp9_prot_init(struct VP9Decoder_s *pbi, u32 mask)
 #if 0
 	data32 = READ_VREG(HEVC_SHIFT_STARTCODE);
 	if (data32 != 0x00000100) {
-		pr_info("vp9 prot init error %d\n", __LINE__);
+		pr_err("vp9 prot init error %d\n", __LINE__);
 		return;
 	}
 	data32 = READ_VREG(HEVC_SHIFT_EMULATECODE);
 	if (data32 != 0x00000300) {
-		pr_info("vp9 prot init error %d\n", __LINE__);
+		pr_err("vp9 prot init error %d\n", __LINE__);
 		return;
 	}
 	WRITE_VREG(HEVC_SHIFT_STARTCODE, 0x12345678);
 	WRITE_VREG(HEVC_SHIFT_EMULATECODE, 0x9abcdef0);
 	data32 = READ_VREG(HEVC_SHIFT_STARTCODE);
 	if (data32 != 0x12345678) {
-		pr_info("vp9 prot init error %d\n", __LINE__);
+		pr_err("vp9 prot init error %d\n", __LINE__);
 		return;
 	}
 	data32 = READ_VREG(HEVC_SHIFT_EMULATECODE);
 	if (data32 != 0x9abcdef0) {
-		pr_info("vp9 prot init error %d\n", __LINE__);
+		pr_err("vp9 prot init error %d\n", __LINE__);
 		return;
 	}
 #endif
@@ -9890,7 +9936,7 @@ static int vvp9_local_init(struct VP9Decoder_s *pbi)
 
 	pbi->gvs = vzalloc(sizeof(struct vdec_info));
 	if (NULL == pbi->gvs) {
-		pr_info("the struct of vdec status malloc failed.\n");
+		pr_err("the struct of vdec status malloc failed.\n");
 		return -1;
 	}
 	vdec_set_vframe_comm(hw_to_vdec(pbi), DRIVER_NAME);
@@ -10029,7 +10075,7 @@ static s32 vvp9_init(struct VP9Decoder_s *pbi)
 				vvp9_isr_thread_fn,
 				IRQF_ONESHOT,/*run thread on this irq disabled*/
 				"vvp9-irq", (void *)pbi)) {
-		pr_info("vvp9 irq register error.\n");
+		pr_err("vvp9 irq register error.\n");
 		amhevc_disable();
 		return -ENOENT;
 	}
@@ -10232,7 +10278,7 @@ static int amvdec_vp9_probe(struct platform_device *pdev)
 	mutex_lock(&vvp9_mutex);
 	pbi = vzalloc(sizeof(struct VP9Decoder_s));
 	if (pbi == NULL) {
-		pr_info("\namvdec_vp9 device data allocation failed\n");
+		pr_err("\namvdec_vp9 device data allocation failed\n");
 		mutex_unlock(&vvp9_mutex);
 		return -ENOMEM;
 	}
@@ -10322,7 +10368,7 @@ static int amvdec_vp9_probe(struct platform_device *pdev)
 #else
 	if (vvp9_init(pbi) < 0) {
 #endif
-		pr_info("\namvdec_vp9 init failed.\n");
+		pr_err("\namvdec_vp9 init failed.\n");
 		vp9_local_uninit(pbi);
 		uninit_mmu_buffers(pbi);
 		vfree(pbi);
@@ -11407,7 +11453,7 @@ static int ammvdec_vp9_probe(struct platform_device *pdev)
 	memset(&vf_dp, 0, sizeof(struct vframe_master_display_colour_s));
 	pbi = vmalloc(sizeof(struct VP9Decoder_s));
 	if (pbi == NULL) {
-		pr_info("\nammvdec_vp9 device data allocation failed\n");
+		pr_err("\nammvdec_vp9 device data allocation failed\n");
 		return -ENOMEM;
 	}
 	memset(pbi, 0, sizeof(struct VP9Decoder_s));
@@ -11730,7 +11776,7 @@ static int ammvdec_vp9_probe(struct platform_device *pdev)
 	}
 
 	if (vvp9_init(pdata) < 0) {
-		pr_info("\namvdec_vp9 init failed.\n");
+		pr_err("\namvdec_vp9 init failed.\n");
 		vdec_timeline_put(pdata->sync);
 		vp9_local_uninit(pbi);
 		uninit_mmu_buffers(pbi);

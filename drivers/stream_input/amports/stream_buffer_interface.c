@@ -14,7 +14,6 @@
  * more details.
  *
  */
-#define DEBUG
 #include <linux/kernel.h>
 #include <linux/types.h>
 #include <linux/errno.h>
@@ -247,7 +246,7 @@ static int stream_buffer_copy(struct stream_buf_s *stbuf, const u8 *buf, u32 siz
 		len = ((size - i) > MAP_RANGE) ? MAP_RANGE : size - i;
 		src = stbuf->is_phybuf ?
 			codec_mm_vmap((ulong) buf + i, len) :
-			(void *) buf;
+			(void *)(buf + i);
 		dst = codec_mm_vmap(stbuf->buf_wp + i, len);
 		if (!src || !dst) {
 			ret = -EFAULT;

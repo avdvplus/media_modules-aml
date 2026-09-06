@@ -14,7 +14,6 @@
  * more details.
  *
  */
-#define DEBUG
 #include <linux/kernel.h>
 #include <linux/spinlock.h>
 #include <linux/timer.h>

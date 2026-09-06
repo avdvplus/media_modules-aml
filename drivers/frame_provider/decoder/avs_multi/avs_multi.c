@@ -860,7 +860,7 @@ static void userdata_push_process(struct vdec_avs_hw_s *hw)
 		pdata += wp_start;
 		nLeft = user_data_len;
 		while (nLeft >= 8) {
-			pr_info("%02x %02x %02x %02x %02x %02x %02x %02x\n",
+			pr_debug("%02x %02x %02x %02x %02x %02x %02x %02x\n",
 				pdata[0], pdata[1], pdata[2], pdata[3],
 				pdata[4], pdata[5], pdata[6], pdata[7]);
 			nLeft -= 8;
@@ -875,7 +875,7 @@ static void userdata_push_process(struct vdec_avs_hw_s *hw)
 		nLeft = USER_DATA_SIZE - wp_start;
 
 		while (nLeft >= 8) {
-			pr_info("%02x %02x %02x %02x %02x %02x %02x %02x\n",
+			pr_debug("%02x %02x %02x %02x %02x %02x %02x %02x\n",
 				pdata[0], pdata[1], pdata[2], pdata[3],
 				pdata[4], pdata[5], pdata[6], pdata[7]);
 			nLeft -= 8;
@@ -885,7 +885,7 @@ static void userdata_push_process(struct vdec_avs_hw_s *hw)
 		pdata = (unsigned char *)hw->user_data_buffer;
 		nLeft = user_data_wp;
 		while (nLeft >= 8) {
-			pr_info("%02x %02x %02x %02x %02x %02x %02x %02x\n",
+			pr_debug("%02x %02x %02x %02x %02x %02x %02x %02x\n",
 				pdata[0], pdata[1], pdata[2], pdata[3],
 				pdata[4], pdata[5], pdata[6], pdata[7]);
 			nLeft -= 8;
@@ -895,7 +895,7 @@ static void userdata_push_process(struct vdec_avs_hw_s *hw)
 #endif
 
 /*
-	pr_info("pocinfo 0x%x, poc %d, wp 0x%x, len %d\n",
+	pr_debug("pocinfo 0x%x, poc %d, wp 0x%x, len %d\n",
 		   READ_VREG(AV_SCRATCH_L), READ_VREG(AV_SCRATCH_M),
 		   user_data_wp, user_data_length);
 */
@@ -1162,7 +1162,7 @@ static int vavs_vdec_info_init(struct vdec_avs_hw_s *hw)
 
 	hw->gvs = kzalloc(sizeof(struct vdec_info), GFP_KERNEL);
 	if (NULL == hw->gvs) {
-		pr_info("the struct of vdec status malloc failed.\n");
+		pr_err("the struct of vdec status malloc failed.\n");
 		return -ENOMEM;
 	}
 
@@ -1809,7 +1809,7 @@ static void vavs_local_init(struct vdec_avs_hw_s *hw)
 		CODEC_MM_FLAGS_CMA_CLEAR |
 		CODEC_MM_FLAGS_FOR_VDECODER);
 	if (hw->mm_blk_handle == NULL)
-		pr_info("Error, decoder_bmmu_box_alloc_box fail\n");
+		pr_err("Error, decoder_bmmu_box_alloc_box fail\n");
 
 }
 
@@ -1846,7 +1846,7 @@ static void vavs_local_reset(struct vdec_avs_hw_s *hw)
 {
 	mutex_lock(&vavs_mutex);
 	hw->recover_flag = 1;
-	pr_info("error, local reset\n");
+	pr_err("error, local reset\n");
 	amvdec_stop();
 	msleep(100);
 	avs_vf_notify_receiver(hw, PROVIDER_NAME, VFRAME_EVENT_PROVIDER_RESET, NULL);
@@ -1898,7 +1898,7 @@ static void vavs_fatal_error_handler(struct work_struct *work)
 		amvdec_start();
 		mutex_unlock(&vavs_mutex);
 	} else {
-		pr_info("avs fatal_error_handler\n");
+		pr_err("avs fatal_error_handler\n");
 		vavs_local_reset(hw);
 	}
 	atomic_set(&hw->error_handler_run, 0);
@@ -1979,9 +1979,9 @@ static void vavs_put_timer_func(unsigned long arg)
 #else
 			if (!atomic_read(&hw->error_handler_run)) {
 				atomic_set(&hw->error_handler_run, 1);
-				pr_info("AVS_SOS_COUNT = %d\n",
+				pr_debug("AVS_SOS_COUNT = %d\n",
 					READ_VREG(AVS_SOS_COUNT));
-				pr_info("WP = 0x%x, RP = 0x%x, LEVEL = 0x%x, AVAIL = 0x%x, CUR_PTR = 0x%x\n",
+				pr_debug("WP = 0x%x, RP = 0x%x, LEVEL = 0x%x, AVAIL = 0x%x, CUR_PTR = 0x%x\n",
 					READ_VREG(VLD_MEM_VIFIFO_WP),
 					READ_VREG(VLD_MEM_VIFIFO_RP),
 					READ_VREG(VLD_MEM_VIFIFO_LEVEL),
@@ -1998,11 +1998,11 @@ static void vavs_put_timer_func(unsigned long arg)
 		kfifo_len(&hw->display_q) == 0 &&
 		READ_VREG(VLD_MEM_VIFIFO_LEVEL) >
 		error_watchdog_buf_threshold) {
-		pr_info("newq %d dispq %d recyq %d\r\n",
+		pr_debug("newq %d dispq %d recyq %d\r\n",
 			kfifo_len(&hw->newframe_q),
 			kfifo_len(&hw->display_q),
 			kfifo_len(&hw->recycle_q));
-		pr_info("pc %x stream buf wp %x rp %x level %x\n",
+		pr_debug("pc %x stream buf wp %x rp %x level %x\n",
 			READ_VREG(MPC_E),
 			READ_VREG(VLD_MEM_VIFIFO_WP),
 			READ_VREG(VLD_MEM_VIFIFO_RP),
@@ -2016,9 +2016,9 @@ static void vavs_put_timer_func(unsigned long arg)
 	if (radr != 0) {
 		if (rval != 0) {
 			WRITE_VREG(radr, rval);
-			pr_info("WRITE_VREG(%x,%x)\n", radr, rval);
+			pr_debug("WRITE_VREG(%x,%x)\n", radr, rval);
 		} else
-			pr_info("READ_VREG(%x)=%x\n", radr, READ_VREG(radr));
+			pr_debug("READ_VREG(%x)=%x\n", radr, READ_VREG(radr));
 		rval = 0;
 		radr = 0;
 	}
@@ -2062,7 +2062,7 @@ static void long_cabac_do_work(struct work_struct *work)
 	int status = 0;
 	struct vdec_avs_hw_s *hw = gw;
 #ifdef PERFORMANCE_DEBUG
-	pr_info("enter %s buf level (new %d, display %d, recycle %d)\r\n",
+	pr_debug("enter %s buf level (new %d, display %d, recycle %d)\r\n",
 		__func__,
 		kfifo_len(&hw->newframe_q),
 		kfifo_len(&hw->display_q),
@@ -2088,7 +2088,7 @@ static void long_cabac_do_work(struct work_struct *work)
 		);
 #endif
 	if (status < 0) {
-		pr_info("transcoding error, local reset\r\n");
+		pr_err("transcoding error, local reset\r\n");
 		vavs_local_reset(hw);
 	}
 
@@ -2262,7 +2262,7 @@ static s32 vavs_init(struct vdec_avs_hw_s *hw)
 	if (vdec_request_irq(VDEC_IRQ_1, vavs_isr,
 			"vavs-irq", (void *)hw)) {
 		amvdec_disable();
-		pr_info("vavs irq register error.\n");
+		pr_err("vavs irq register error.\n");
 		return -ENOENT;
 	}
 #endif
@@ -2328,7 +2328,7 @@ static int amvdec_avs_probe(struct platform_device *pdev)
 
 	hw = (struct vdec_avs_hw_s *)vzalloc(sizeof(struct vdec_avs_hw_s));
 	if (hw == NULL) {
-		pr_info("\nammvdec_avs decoder driver alloc failed\n");
+		pr_err("\nammvdec_avs decoder driver alloc failed\n");
 		return -ENOMEM;
 	}
 	pdata->private = hw;
@@ -2384,7 +2384,7 @@ static int amvdec_avs_probe(struct platform_device *pdev)
 #endif
 	INIT_WORK(&hw->set_clk_work, avs_set_clk);
 	if (vavs_init(hw) < 0) {
-		pr_info("amvdec_avs init failed.\n");
+		pr_err("amvdec_avs init failed.\n");
 		kfree(hw->gvs);
 		hw->gvs = NULL;
 		pdata->dec_status = NULL;
@@ -3544,7 +3544,7 @@ static irqreturn_t vmavs_isr_thread_fn(struct vdec_s *vdec, int irq)
 						NULL);
 
 				if (kfifo_get(&hw->newframe_q, &vf) == 0) {
-					pr_info("fatal error, no available buffer slot.");
+					pr_err("fatal error, no available buffer slot.");
 					return IRQ_HANDLED;
 							}
 				set_frame_info(hw, vf, &dur);
@@ -4004,7 +4004,7 @@ static void vmavs_dump_state(struct vdec_s *vdec)
 
 	hw = (struct vdec_avs_hw_s *)vzalloc(sizeof(struct vdec_avs_hw_s));
 	if (hw == NULL) {
-		pr_info("\nammvdec_avs decoder driver alloc failed\n");
+		pr_err("\nammvdec_avs decoder driver alloc failed\n");
 		return -ENOMEM;
 	}
 	/*atomic_set(&hw->error_handler_run, 0);*/
@@ -4020,7 +4020,7 @@ static void vmavs_dump_state(struct vdec_s *vdec)
 		canvas_base = 0;
 		canvas_num = 3;
 	} else {
-		pr_info("Error, do not support longcabac work around!!!");
+		pr_err("Error, do not support longcabac work around!!!");
 		r = -ENOMEM;
 		goto error1;
 	}
@@ -4093,7 +4093,7 @@ static void vmavs_dump_state(struct vdec_s *vdec)
 	}
 
 	if (vavs_init(hw) < 0) {
-		pr_info("amvdec_avs init failed.\n");
+		pr_err("amvdec_avs init failed.\n");
 		r = -ENODEV;
 		goto error4;
 	}
@@ -4569,7 +4569,7 @@ static int ammvdec_avs_probe2(struct platform_device *pdev)
 
 	hw = (struct vdec_avs_hw_s *)vzalloc(sizeof(struct vdec_avs_hw_s));
 	if (hw == NULL) {
-		pr_info("\nammvdec_avs decoder driver alloc failed\n");
+		pr_err("\nammvdec_avs decoder driver alloc failed\n");
 		return -ENOMEM;
 	}
 	pr_info("%s %d\n", __func__, __LINE__);
@@ -4588,7 +4588,7 @@ static int ammvdec_avs_probe2(struct platform_device *pdev)
 		canvas_base = 0;
 		canvas_num = 3;
 	} else {
-		pr_info("Error, do not support longcabac work around!!!");
+		pr_err("Error, do not support longcabac work around!!!");
 		return -ENOMEM;
 	}
 	pr_info("%s %d\n", __func__, __LINE__);
@@ -4656,7 +4656,7 @@ static int ammvdec_avs_probe2(struct platform_device *pdev)
 	pr_info("%s %d\n", __func__, __LINE__);
 
 	if (vavs_init2(hw) < 0) {
-		pr_info("amvdec_avs init failed.\n");
+		pr_err("amvdec_avs init failed.\n");
 		kfree(hw->gvs);
 		hw->gvs = NULL;
 		pdata->dec_status = NULL;
@@ -4864,7 +4864,7 @@ static int __init ammvdec_avs_driver_init_module(void)
 		pr_err("failed to register ammvdec_avs driver\n");
 #ifdef DEBUG_WITH_SINGLE_MODE
 	if (platform_driver_register(&amvdec_avs_driver)) {
-		pr_info("failed to register amvdec_avs driver\n");
+		pr_err("failed to register amvdec_avs driver\n");
 		return -ENODEV;
 	}
 #endif

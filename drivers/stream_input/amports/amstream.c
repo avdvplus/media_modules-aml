@@ -14,7 +14,6 @@
  * more details.
  *
  */
-#define DEBUG
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/types.h>
@@ -602,7 +601,7 @@ static void port_set_inited(struct port_priv_s *priv)
 
 		vdec->port_flag |= PORT_FLAG_INITED;
 		port->flag |= PORT_FLAG_INITED;
-		pr_info("vdec->port_flag=0x%x, port_flag=0x%x\n",
+		pr_debug("vdec->port_flag=0x%x, port_flag=0x%x\n",
 			vdec->port_flag, port->flag);
 	} else
 		port->flag |= PORT_FLAG_INITED;
@@ -1222,10 +1221,17 @@ static ssize_t amstream_vframe_write(struct file *file, const char *buf,
 			break;/*alway return for no block mode.*/
 		} else if (ret == -EAGAIN) {
 			int level;
+			unsigned int delay_min = 1000;
+			unsigned int delay_max = 2000;
+
 			level = vdec_input_level(&priv->vdec->input);
 			if (wait_max_cnt-- < 0)
 				break;
-			msleep(20);
+			if (level > 0) {
+				delay_min = 2000;
+				delay_max = 4000;
+			}
+			usleep_range(delay_min, delay_max);
 		}
 	} while (ret == -EAGAIN);
 	return ret;

@@ -14,7 +14,6 @@
  * more details.
  *
  */
-#define DEBUG
 #include <linux/kernel.h>
 #include <linux/types.h>
 #include <linux/errno.h>
@@ -8641,7 +8640,7 @@ static void print_data(unsigned char *pdata,
 		nLeft = 96-72;
 		while (i < nLeft) {
 			if (pdata[0] != 0) {
-				pr_info("some data error\n");
+				pr_err("some data error\n");
 				break;
 			}
 			pdata++;
@@ -8973,7 +8972,7 @@ static int vmh264_user_data_read(struct vdec_s *vdec,
 	mutex_lock(&hw->userdata_mutex);
 
 /*
-	pr_info("ri = %d, wi = %d\n",
+	pr_debug("ri = %d, wi = %d\n",
 		lg_p_mpeg12_userdata_info->read_index,
 		lg_p_mpeg12_userdata_info->write_index);
 */
@@ -8990,7 +8989,7 @@ static int vmh264_user_data_read(struct vdec_s *vdec,
 	rec_len = p_userdata_rec->rec_len;
 	rec_data_start = p_userdata_rec->rec_start + hw->userdata_info.data_buf;
 /*
-	pr_info("rec_len:%d, rec_start:%d, buf_len:%d\n",
+	pr_debug("rec_len:%d, rec_start:%d, buf_len:%d\n",
 		p_userdata_rec->rec_len,
 		p_userdata_rec->rec_start,
 		puserdata_para->buf_len);
@@ -10551,7 +10550,7 @@ static int ammvdec_h264_probe(struct platform_device *pdev)
 	hw = (struct vdec_h264_hw_s *)h264_alloc_hw_stru(&pdev->dev,
 		sizeof(struct vdec_h264_hw_s), GFP_KERNEL);
 	if (hw == NULL) {
-		pr_info("\nammvdec_h264 device data allocation failed\n");
+		pr_err("\nammvdec_h264 device data allocation failed\n");
 		return -ENOMEM;
 	}
 	hw->id = pdev->id;
@@ -10604,7 +10603,7 @@ static int ammvdec_h264_probe(struct platform_device *pdev)
 
 	if (ammvdec_h264_mmu_init(hw)) {
 		h264_free_hw_stru(&pdev->dev, (void *)hw);
-		pr_info("\nammvdec_h264 mmu alloc failed!\n");
+		pr_err("\nammvdec_h264 mmu alloc failed!\n");
 		return -ENOMEM;
 	}
 
@@ -10858,7 +10857,7 @@ static int ammvdec_h264_probe(struct platform_device *pdev)
 		hevc_source_changed(VFORMAT_HEVC, 3840, 2160, 60);
 
 	if (vh264_init(hw) < 0) {
-		pr_info("\nammvdec_h264 init failed.\n");
+		pr_err("\nammvdec_h264 init failed.\n");
 		ammvdec_h264_mmu_release(hw);
 		h264_free_hw_stru(&pdev->dev, (void *)hw);
 		pdata->dec_status = NULL;
@@ -11079,7 +11078,7 @@ static int __init ammvdec_h264_driver_init_module(void)
 
 	pr_info("ammvdec_h264 module init\n");
 	if (platform_driver_register(&ammvdec_h264_driver)) {
-		pr_info("failed to register ammvdec_h264 driver\n");
+		pr_err("failed to register ammvdec_h264 driver\n");
 		return -ENODEV;
 	}
 

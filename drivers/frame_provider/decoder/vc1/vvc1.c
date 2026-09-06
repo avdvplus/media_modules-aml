@@ -14,7 +14,6 @@
  * more details.
  *
  */
-#define DEBUG
 #include <linux/kernel.h>
 #include <linux/types.h>
 #include <linux/errno.h>
@@ -340,7 +339,7 @@ static int ge2d_canvas_dup(struct canvas_s *srcy, struct canvas_s *srcu,
 	ge2d_config.dst_para.height = srcy->height;
 
 	if (ge2d_context_config_ex(ge2d_vc1_context, &ge2d_config) < 0) {
-		pr_info("ge2d_context_config_ex failed\n");
+		pr_err("ge2d_context_config_ex failed\n");
 		return -1;
 	}
 
@@ -447,7 +446,7 @@ static irqreturn_t vvc1_isr(int irq, void *dev_id)
 		picture_type = (reg >> 3) & 7;
 
 		if (buffer_index >= DECODE_BUFFER_NUM_MAX) {
-			pr_info("fatal error, invalid buffer index.");
+			pr_err("fatal error, invalid buffer index.");
 			return IRQ_HANDLED;
 		}
 
@@ -941,7 +940,7 @@ static int vvc1_vdec_info_init(void)
 {
 	gvs = kzalloc(sizeof(struct vdec_info), GFP_KERNEL);
 	if (NULL == gvs) {
-		pr_info("the struct of vdec status malloc failed.\n");
+		pr_err("the struct of vdec status malloc failed.\n");
 		return -ENOMEM;
 	}
 	return 0;
@@ -1280,7 +1279,7 @@ static s32 vvc1_init(void)
 			"vvc1-irq", (void *)vvc1_dec_id)) {
 		amvdec_disable();
 
-		pr_info("vvc1 irq register error.\n");
+		pr_err("vvc1 irq register error.\n");
 		return -ENOENT;
 	}
 
@@ -1352,7 +1351,7 @@ static int amvdec_vc1_probe(struct platform_device *pdev)
 	INIT_WORK(&set_clk_work, vvc1_set_clk);
 	spin_lock_init(&vc1_rp_lock);
 	if (vvc1_init() < 0) {
-		pr_info("amvdec_vc1 init failed.\n");
+		pr_err("amvdec_vc1 init failed.\n");
 		kfree(gvs);
 		gvs = NULL;
 		pdata->dec_status = NULL;
@@ -1465,7 +1464,7 @@ static int __init amvdec_vc1_driver_init_module(void)
 		ge2d_vc1_context = create_ge2d_work_queue();
 
 	if (ge2d_vc1_context == NULL) {
-		pr_info("create_ge2d_work_queue failed\n");
+		pr_err("create_ge2d_work_queue failed\n");
 		return -ENODEV;
 	}
 

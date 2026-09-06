@@ -15,7 +15,6 @@
  *
  */
 
-#define DEBUG
 #include <linux/kernel.h>
 #include <linux/types.h>
 #include <linux/errno.h>
@@ -384,7 +383,7 @@ static int ge2d_videoh264task_init(void)
 		ge2d_videoh264_context = create_ge2d_work_queue();
 
 	if (ge2d_videoh264_context == NULL) {
-		pr_info("create_ge2d_work_queue video task failed\n");
+		pr_err("create_ge2d_work_queue video task failed\n");
 		return -1;
 	}
 	return 0;
@@ -449,7 +448,7 @@ static int ge2d_canvas_dup(struct canvas_s *srcy, struct canvas_s *srcu,
 	ge2d_config.dst_para.height = srcy->height;
 
 	if (ge2d_context_config_ex(ge2d_videoh264_context, &ge2d_config) < 0) {
-		pr_info("ge2d_context_config_ex failed\n");
+		pr_err("ge2d_context_config_ex failed\n");
 		return -1;
 	}
 
@@ -485,7 +484,7 @@ void spec_set_canvas(struct buffer_spec_s *spec,
 
 static void vh264_notify_work(struct work_struct *work)
 {
-	pr_info("frame duration changed %d\n", frame_dur);
+	pr_debug("frame duration changed %d\n", frame_dur);
 	vf_notify_receiver(PROVIDER_NAME, VFRAME_EVENT_PROVIDER_FR_HINT,
 		(void *)((unsigned long)frame_dur));
 
@@ -556,7 +555,7 @@ static bool vf_valid_check(struct vframe_s *vf) {
 		if (vf == &vfpool[i])
 			return true;
 	}
-	pr_info(" invalid vf been put, vf = %p\n", vf);
+	pr_err(" invalid vf been put, vf = %p\n", vf);
 	for (i = 0; i < VF_POOL_SIZE; i++) {
 		pr_info("www valid vf[%d]= %p \n", i, &vfpool[i]);
 	}
@@ -657,7 +656,7 @@ static void dump_cc_ascii(const uint8_t *buf, unsigned int vpts, int poc)
 
 	cc_flag = buf[1] & 0x40;
 	if (!cc_flag) {
-		pr_info("### cc_flag is invalid\n");
+		pr_err("### cc_flag is invalid\n");
 		return;
 	}
 	cc_count = buf[1] & 0x1f;
@@ -1798,7 +1797,7 @@ static void qos_do_work(struct work_struct *work)
 	poc = READ_VREG(AV_SCRATCH_M);
 	bOffset = READ_VREG(AV_SCRATCH_L);
 /*
-	pr_info("poc:%d, bOffset:0x%x\n", poc, bOffset);
+	pr_debug("poc:%d, bOffset:0x%x\n", poc, bOffset);
 */
 	load_qos_data(poc, bOffset);
 
@@ -1851,14 +1850,14 @@ static void userdata_push_do_work(struct work_struct *work)
 
 	if (pts_pickout_offset_us64
 			 (PTS_TYPE_VIDEO, offset, &pts, 0, &pts_us64) != 0) {
-		pr_info("pts pick outfailed, offset:0x%x\n", offset);
+		pr_err("pts pick outfailed, offset:0x%x\n", offset);
 		pts = -1;
 		meta_info.vpts_valid = 0;
 	} else
 		meta_info.vpts_valid = 1;
 	meta_info.vpts = pts;
 /*
-	pr_info("offset:0x%x, vpts:0x%x, slice:%d, poc:%d\n",
+	pr_debug("offset:0x%x, vpts:0x%x, slice:%d, poc:%d\n",
 		offset, pts, slice_type,
 		poc_number);
 */
@@ -2448,7 +2447,7 @@ static inline bool vh264_isr_parser(struct vframe_s *vf,
 	} else {
 		if (pts < h264pts1) {
 			if (h264_pts_count > 24) {
-				pr_info("invalid h264pts1, reset\n");
+				pr_err("invalid h264pts1, reset\n");
 				h264pts1 = pts;
 				h264_pts_count = 0;
 			}
@@ -2625,7 +2624,7 @@ static void vh264_isr(void)
 	WRITE_VREG(ASSIST_MBOX1_CLR_REG, 1);
 
 	if (0 == (stat & STAT_VDEC_RUN)) {
-		pr_info("decoder is not running\n");
+		pr_debug("decoder is not running\n");
 #ifdef HANDLE_H264_IRQ
 		return IRQ_HANDLED;
 #else
@@ -2646,7 +2645,7 @@ static void vh264_isr(void)
 			&& (no_idr_error_count >= no_idr_error_max)
 			&& (ucode_type != UCODE_IP_ONLY_PARAM))) {
 		vh264_running = 0;
-		pr_info("force reset decoder  %d!!!\n", no_idr_error_count);
+		pr_debug("force reset decoder  %d!!!\n", no_idr_error_count);
 		schedule_work(&error_wd_work);
 		decoder_force_reset = 0;
 		no_idr_error_count = 0;
@@ -2663,16 +2662,16 @@ static void vh264_isr(void)
 				vh264_running = 0;
 				fatal_error_flag = DECODER_FATAL_ERROR_UNKNOWN;
 			/* this is fatal error, need restart */
-				pr_info("cmd 1 fatal error happened\n");
+				pr_err("cmd 1 fatal error happened\n");
 				schedule_work(&error_wd_work);
 			} else {
 			vh264_stream_switching_state = SWITCHING_STATE_ON_CMD1;
-			pr_info("Enter switching mode cmd1.\n");
+			pr_debug("Enter switching mode cmd1.\n");
 			schedule_work(&stream_switching_work);
 			}
 			return IRQ_HANDLED;
 		}
-		pr_info("Enter set parameter cmd1.\n");
+		pr_debug("Enter set parameter cmd1.\n");
 		schedule_work(&set_parameter_work);
 		return IRQ_HANDLED;
 	} else if ((cpu_cmd & 0xff) == 2) {
@@ -3247,7 +3246,7 @@ static void vh264_isr(void)
 		vh264_running = 0;
 		fatal_error_flag = DECODER_FATAL_ERROR_UNKNOWN;
 		/* this is fatal error, need restart */
-		pr_info("fatal error happend\n");
+		pr_err("fatal error happend\n");
 		amvdec_stop();
 		if (!fatal_error_reset)
 			schedule_work(&error_wd_work);
@@ -3529,7 +3528,7 @@ static int vh264_vdec_info_init(void)
 {
 	gvs = kzalloc(sizeof(struct vdec_info), GFP_KERNEL);
 	if (NULL == gvs) {
-		pr_info("the struct of vdec status malloc failed.\n");
+		pr_err("the struct of vdec status malloc failed.\n");
 		return -ENOMEM;
 	}
 	return 0;
@@ -4326,7 +4325,7 @@ static int amvdec_h264_probe(struct platform_device *pdev)
 	is_reset = 0;
 	clk_adj_frame_count = 0;
 	if (vh264_init() < 0) {
-		pr_info("\namvdec_h264 init failed.\n");
+		pr_err("\namvdec_h264 init failed.\n");
 		kfree(gvs);
 		gvs = NULL;
 		pdata->dec_status = NULL;

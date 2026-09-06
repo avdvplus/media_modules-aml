@@ -5047,7 +5047,7 @@ static int avs2_prepare_display_buf(struct AVS2Decoder_s *dec)
 		}
 
 		if (kfifo_get(&dec->newframe_q, &vf) == 0) {
-			pr_info("fatal error, no available buffer slot.");
+			pr_err("fatal error, no available buffer slot.");
 			return -1;
 		}
 
@@ -5705,7 +5705,7 @@ static irqreturn_t vavs2_isr_thread_fn(int irq, void *data)
 	int32_t start_code = 0;
 
 	/*if (dec->wait_buf)
-		pr_info("set wait_buf to 0\r\n");
+		pr_debug("set wait_buf to 0\r\n");
 	*/
 
 	avs2_print(dec, AVS2_DBG_BUFMGR_MORE,
@@ -6440,7 +6440,7 @@ static void vavs2_put_timer_func(unsigned long arg)
 				/* receiver has no buffer to recycle */
 				/*if ((state == RECEIVER_INACTIVE) &&
 					(kfifo_is_empty(&dec->display_q))) {
-				pr_info("avs2 something error,need reset\n");
+				pr_err("avs2 something error,need reset\n");
 				}*/
 			}
 		}
@@ -6512,7 +6512,7 @@ static void vavs2_put_timer_func(unsigned long arg)
 					   dec->lmem_ptr[i + 3 - ii]);
 			}
 			if (((i + ii) & 0xf) == 0)
-				pr_info("\n");
+				pr_debug("\n");
 		}
 		debug &= ~AVS2_DBG_DUMP_RPM_BUF;
 	}
@@ -6528,7 +6528,7 @@ static void vavs2_put_timer_func(unsigned long arg)
 					   dec->lmem_ptr[i + 3 - ii]);
 			}
 			if (((i + ii) & 0xf) == 0)
-				pr_info("\n");
+				pr_debug("\n");
 		}
 		debug &= ~AVS2_DBG_DUMP_LMEM_BUF;
 	}
@@ -6547,20 +6547,20 @@ static void vavs2_put_timer_func(unsigned long arg)
 	if (pop_shorts != 0) {
 		int i;
 		u32 sum = 0;
-		pr_info("pop stream 0x%x shorts\r\n", pop_shorts);
+		pr_debug("pop stream 0x%x shorts\r\n", pop_shorts);
 		for (i = 0; i < pop_shorts; i++) {
 			u32 data =
 			(READ_HREG(HEVC_SHIFTED_DATA) >> 16);
 			WRITE_HREG(HEVC_SHIFT_COMMAND,
 			(1<<7)|16);
 			if ((i & 0xf) == 0)
-				pr_info("%04x:", i);
-			pr_info("%04x ", data);
+				pr_debug("%04x:", i);
+			pr_debug("%04x ", data);
 			if (((i + 1) & 0xf) == 0)
-				pr_info("\r\n");
+				pr_debug("\r\n");
 			sum += data;
 		}
-		pr_info("\r\nsum = %x\r\n", sum);
+		pr_debug("\r\nsum = %x\r\n", sum);
 		pop_shorts = 0;
 	}
 	if (dbg_cmd != 0) {
@@ -6667,24 +6667,24 @@ static void vavs2_prot_init(struct AVS2Decoder_s *dec)
 #if 0
 	data32 = READ_VREG(HEVC_SHIFT_STARTCODE);
 	if (data32 != 0x00000100) {
-		pr_info("avs2 prot init error %d\n", __LINE__);
+		pr_err("avs2 prot init error %d\n", __LINE__);
 		return;
 	}
 	data32 = READ_VREG(HEVC_SHIFT_EMULATECODE);
 	if (data32 != 0x00000300) {
-		pr_info("avs2 prot init error %d\n", __LINE__);
+		pr_err("avs2 prot init error %d\n", __LINE__);
 		return;
 	}
 	WRITE_VREG(HEVC_SHIFT_STARTCODE, 0x12345678);
 	WRITE_VREG(HEVC_SHIFT_EMULATECODE, 0x9abcdef0);
 	data32 = READ_VREG(HEVC_SHIFT_STARTCODE);
 	if (data32 != 0x12345678) {
-		pr_info("avs2 prot init error %d\n", __LINE__);
+		pr_err("avs2 prot init error %d\n", __LINE__);
 		return;
 	}
 	data32 = READ_VREG(HEVC_SHIFT_EMULATECODE);
 	if (data32 != 0x9abcdef0) {
-		pr_info("avs2 prot init error %d\n", __LINE__);
+		pr_err("avs2 prot init error %d\n", __LINE__);
 		return;
 	}
 #endif
@@ -6859,7 +6859,7 @@ static s32 vavs2_init(struct vdec_s *vdec)
 				vavs2_isr_thread_fn,
 				IRQF_ONESHOT,/*run thread on this irq disabled*/
 				"vavs2-irq", (void *)dec)) {
-		pr_info("vavs2 irq register error.\n");
+		pr_err("vavs2 irq register error.\n");
 		amhevc_disable();
 		return -ENOENT;
 	}
@@ -7074,7 +7074,7 @@ static int amvdec_avs2_probe(struct platform_device *pdev)
 	/*pdata->set_isreset = vavs2_set_isreset;*/
 	is_reset = 0;
 	if (vavs2_init(pdata) < 0) {
-		pr_info("\namvdec_avs2 init failed.\n");
+		pr_err("\namvdec_avs2 init failed.\n");
 		avs2_local_uninit(dec);
 		uninit_mmu_buffers(dec);
 		pdata->dec_status = NULL;
@@ -7788,7 +7788,7 @@ static int ammvdec_avs2_probe(struct platform_device *pdev)
 	dec = vmalloc(sizeof(struct AVS2Decoder_s));
 	memset(dec, 0, sizeof(struct AVS2Decoder_s));
 	if (dec == NULL) {
-		pr_info("\nammvdec_avs2 device data allocation failed\n");
+		pr_err("\nammvdec_avs2 device data allocation failed\n");
 		return -ENOMEM;
 	}
 	if (pdata->parallel_dec == 1) {
@@ -7980,7 +7980,7 @@ static int ammvdec_avs2_probe(struct platform_device *pdev)
 
 	dec->cma_dev = pdata->cma_dev;
 	if (vavs2_init(pdata) < 0) {
-		pr_info("\namvdec_avs2 init failed.\n");
+		pr_err("\namvdec_avs2 init failed.\n");
 		avs2_local_uninit(dec);
 		uninit_mmu_buffers(dec);
 		/* devm_kfree(&pdev->dev, (void *)dec); */

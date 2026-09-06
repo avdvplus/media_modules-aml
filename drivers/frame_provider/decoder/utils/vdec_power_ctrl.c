@@ -15,7 +15,6 @@
  *
  */
 
-#define DEBUG
 #include "vdec_power_ctrl.h"
 #include <linux/amlogic/media/utils/vdec_reg.h>
 #include <linux/amlogic/power_ctrl.h>

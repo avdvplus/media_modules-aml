@@ -14,7 +14,6 @@
   * more details.
   *
   */
-#define DEBUG
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/types.h>
@@ -306,7 +305,7 @@ unsigned int ar = DISP_RATIO_ASPECT_RATIO_MAX;
  *	0x200, if > 1080p,use mode 2,else use mode 1;
  *	0x300, if > 720p, use mode 4, else use mode 1;
  */
-static u32 double_write_mode = 0x3;
+static u32 double_write_mode;
 
 /* triple_write_mode:
  * 0, no triple write;
@@ -896,6 +895,7 @@ struct AV1HW_s {
 	unsigned *rdma_adr;
 	struct trace_decoder_name trace;
 	bool discard_dv_data;
+	bool hdr10p_reported;
 
 #ifdef OW_TRIPLE_WRITE
 	int triple_write_mode;
@@ -6297,6 +6297,33 @@ void parse_metadata(struct AV1HW_s *hw, struct vframe_s *vf, struct PIC_BUFFER_C
 	if (pic->aux_data_buf && pic->aux_data_size) {
 		u32 size = 0, type = 0;
 		char *p = pic->aux_data_buf;
+		char *q = pic->aux_data_buf;
+		bool dv_present = false;
+
+		while (q + 8 < pic->aux_data_buf + pic->aux_data_size) {
+			u32 qsize = 0, qtype = 0;
+			char qmeta;
+
+			qsize = *q++;
+			qsize = (qsize << 8) | *q++;
+			qsize = (qsize << 8) | *q++;
+			qsize = (qsize << 8) | *q++;
+			qtype = *q++;
+			qtype = (qtype << 8) | *q++;
+			qtype = (qtype << 8) | *q++;
+			qtype = (qtype << 8) | *q++;
+			if (q + qsize > pic->aux_data_buf + pic->aux_data_size)
+				break;
+			qmeta = ((qtype >> 24) & 0xff) - 0x10;
+			if (qmeta == OBU_METADATA_TYPE_ITUT_T35 &&
+				q + 6 < pic->aux_data_buf + pic->aux_data_size &&
+				q[0] == 0xB5 && q[1] == 0x00 && q[2] == 0x3B &&
+				q[3] == 0x00 && q[4] == 0x00 && q[5] == 0x08 && q[6] == 0x00) {
+				dv_present = true;
+				break;
+			}
+			q += qsize;
+		}
 
 		/* parser metadata */
 		while (p + 8 < pic->aux_data_buf + pic->aux_data_size) {
@@ -6316,14 +6343,19 @@ void parse_metadata(struct AV1HW_s *hw, struct vframe_s *vf, struct PIC_BUFFER_C
 				case OBU_METADATA_TYPE_ITUT_T35:
 					vf->discard_dv_data = hw->discard_dv_data;
 					if ((p + 5 < pic->aux_data_buf + pic->aux_data_size) &&
-						vf->discard_dv_data &&
 						p[0] == 0xB5 && p[1] == 0x00 && p[2] == 0x3C &&
 						p[3] == 0x00 && p[4] == 0x01 && p[5] == 0x04) {
 						u32 data;
-						data = hw->video_signal_type;
-						data = data & 0xFFFF00FF;
-						data = data | (0x30<<8);
-						hw->video_signal_type = data;
+						if (!hw->hdr10p_reported) {
+							hw->hdr10p_reported = true;
+							av1_print(hw, 0, "hdr10p metadata detected, size %d\n", size);
+						}
+						if (!dv_present) {
+							data = hw->video_signal_type;
+							data = data & 0xFFFF00FF;
+							data = data | (0x30<<8);
+							hw->video_signal_type = data;
+						}
 						if ((size > 0) && (size <= HDR10P_BUF_SIZE) &&
 							(pic->hdr10p_data_buf != NULL)) {
 							memcpy(pic->hdr10p_data_buf, p, size);
@@ -6351,7 +6383,7 @@ void parse_metadata(struct AV1HW_s *hw, struct vframe_s *vf, struct PIC_BUFFER_C
 								"hdr10p data size(%d)\n", size);
 							pic->hdr10p_data_size = 0;
 						}
-					} else if ((p + 5 < pic->aux_data_buf + pic->aux_data_size) &&
+					} else if ((p + 6 < pic->aux_data_buf + pic->aux_data_size) &&
 						!vf->discard_dv_data &&
 						p[0] == 0xB5 && p[1] == 0x00 && p[2] == 0x3B &&
 						p[3] == 0x00 && p[4] == 0x00 && p[5] == 0x08 && p[6] == 0x00) {
@@ -8805,7 +8837,7 @@ static irqreturn_t vav1_isr_thread_fn(int irq, void *data)
 	int ret = 0;
 
 	/*if (hw->wait_buf)
-	 *	pr_info("set wait_buf to 0\r\n");
+	 *	pr_debug("set wait_buf to 0\r\n");
 	 */
 
 	if (dec_status == AOM_AV1_FRAME_HEAD_PARSER_DONE ||
@@ -9687,24 +9719,24 @@ static void vav1_prot_init(struct AV1HW_s *hw, u32 mask)
 #if 0
 	data32 = READ_VREG(HEVC_SHIFT_STARTCODE);
 	if (data32 != 0x00000100) {
-		pr_info("av1 prot init error %d\n", __LINE__);
+		pr_err("av1 prot init error %d\n", __LINE__);
 		return;
 	}
 	data32 = READ_VREG(HEVC_SHIFT_EMULATECODE);
 	if (data32 != 0x00000300) {
-		pr_info("av1 prot init error %d\n", __LINE__);
+		pr_err("av1 prot init error %d\n", __LINE__);
 		return;
 	}
 	WRITE_VREG(HEVC_SHIFT_STARTCODE, 0x12345678);
 	WRITE_VREG(HEVC_SHIFT_EMULATECODE, 0x9abcdef0);
 	data32 = READ_VREG(HEVC_SHIFT_STARTCODE);
 	if (data32 != 0x12345678) {
-		pr_info("av1 prot init error %d\n", __LINE__);
+		pr_err("av1 prot init error %d\n", __LINE__);
 		return;
 	}
 	data32 = READ_VREG(HEVC_SHIFT_EMULATECODE);
 	if (data32 != 0x9abcdef0) {
-		pr_info("av1 prot init error %d\n", __LINE__);
+		pr_err("av1 prot init error %d\n", __LINE__);
 		return;
 	}
 #endif
@@ -9745,7 +9777,7 @@ static int vav1_local_init(struct AV1HW_s *hw)
 
 	hw->gvs = vzalloc(sizeof(struct vdec_info));
 	if (NULL == hw->gvs) {
-		pr_info("the struct of vdec status malloc failed.\n");
+		pr_err("the struct of vdec status malloc failed.\n");
 		return -1;
 	}
 #ifdef DEBUG_PTS
@@ -9882,7 +9914,7 @@ static s32 vav1_init(struct AV1HW_s *hw)
 				vav1_isr_thread_fn,
 				IRQF_ONESHOT,/*run thread on this irq disabled*/
 				"vav1-irq", (void *)hw)) {
-		pr_info("vav1 irq register error.\n");
+		pr_err("vav1 irq register error.\n");
 		amhevc_disable();
 		return -ENOENT;
 	}
@@ -10128,7 +10160,7 @@ static int amvdec_av1_probe(struct platform_device *pdev)
 	pbi = av1_decoder_create(&hw->av1_buffer_pool, &hw->common); //&aom_decoder;
 	hw->pbi = pbi;
 	if (hw->pbi == NULL) {
-		pr_info("\nammvdec_av1 device data allocation failed\n");
+		pr_err("\nammvdec_av1 device data allocation failed\n");
 		release_dblk_struct(hw);
 		vfree(hw);
 		return -ENOMEM;

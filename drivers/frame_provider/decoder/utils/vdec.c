@@ -14,7 +14,6 @@
  * more details.
  *
  */
-#define DEBUG
 #include <linux/kernel.h>
 #include <linux/spinlock.h>
 #include <linux/types.h>
@@ -131,7 +130,7 @@ static int rdma_mode = 0x1;
 #define HEVC_RDMA_B_END_ADDR                       0x30fa
 #define HEVC_RDMA_B_STATUS0                        0x30fb
 
-u32 debug = VDEC_DBG_ALWAYS_LOAD_FW;
+u32 debug;
 EXPORT_SYMBOL(debug);
 
 int hevc_max_reset_count;
@@ -675,6 +674,32 @@ static void vdec_stop_armrisc(int hw)
 	}
 }
 
+static void vdec_wait_dmc_chan_idle(const char *who, unsigned int reg, unsigned int mask)
+{
+	ulong timeout = jiffies + HZ / 10;
+
+	while (!(codec_dmcbus_read(reg) & mask)) {
+		if (time_after(jiffies, timeout)) {
+			pr_err_ratelimited("%s: DMC chan idle timeout (reg=0x%x mask=0x%x)\n", who, reg, mask);
+			break;
+		}
+		cpu_relax();
+	}
+}
+
+static void vdec_wait_reg_clear(const char *who, unsigned int reg, unsigned int mask)
+{
+	ulong timeout = jiffies + HZ / 10;
+
+	while (READ_VREG(reg) & mask) {
+		if (time_after(jiffies, timeout)) {
+			pr_err_ratelimited("%s: reg 0x%x mask 0x%x not idle, timeout\n", who, reg, mask);
+			break;
+		}
+		cpu_relax();
+	}
+}
+
 static void vdec_disable_DMC(struct vdec_s *vdec)
 {
 	/*close first,then wait pedding end,timing suggestion from vlsi*/
@@ -705,15 +730,10 @@ static void vdec_disable_DMC(struct vdec_s *vdec)
 	spin_unlock_irqrestore(&vdec_spin_lock, flags);
 
 	if (is_cpu_tm2_revb() ||
-		(get_cpu_major_id() >= AM_MESON_CPU_MAJOR_ID_SC2)) {
-		while (!(codec_dmcbus_read(TM2_REVB_DMC_CHAN_STS)
-			& mask))
-			;
-	} else {
-		while (!(codec_dmcbus_read(DMC_CHAN_STS)
-				& mask))
-				;
-	}
+		(get_cpu_major_id() >= AM_MESON_CPU_MAJOR_ID_SC2))
+		vdec_wait_dmc_chan_idle(__func__, TM2_REVB_DMC_CHAN_STS, mask);
+	else
+		vdec_wait_dmc_chan_idle(__func__, DMC_CHAN_STS, mask);
 
 	pr_debug("%s input->target= 0x%x\n", __func__,  input->target);
 }
@@ -738,7 +758,7 @@ static void vdec_enable_DMC(struct vdec_s *vdec)
 	}
 
 	/*must to be reset the dmc pipeline if it's g12b.*/
-	if (get_cpu_type() == AM_MESON_CPU_MAJOR_ID_G12B)
+	if (!vdec_dual(vdec) && get_cpu_type() == AM_MESON_CPU_MAJOR_ID_G12B)
 		vdec_dmc_pipeline_reset();
 
 	spin_lock_irqsave(&vdec_spin_lock, flags);
@@ -1300,15 +1320,16 @@ static void vdec_sync_input_read(struct vdec_s *vdec)
 		}
 		else if (vdec->input.target == VDEC_INPUT_TARGET_HEVC)
 		{
-			me = READ_VREG(HEVC_SHIFT_BYTE_COUNT);
+			u64 me64, other64;
 
-			// This looks like does nothing? as u32 : TODO is software 64 needed?
-			if (((me & 0x80000000) == 0) && (vdec->input.streaming_rp & 0x80000000))
-				me += 1ULL << 32;
+			me64 = READ_VREG(HEVC_SHIFT_BYTE_COUNT);
+			me64 |= vdec->input.streaming_rp & (0xffffffffULL << 32);
+			if (((me64 & 0x80000000) == 0) && (vdec->input.streaming_rp & 0x80000000))
+				me64 += 1ULL << 32;
 
-			other = vdec_get_associate(vdec)->input.streaming_rp;
+			other64 = vdec_get_associate(vdec)->input.streaming_rp;
 
-			if (me > other)
+			if (me64 > other64)
 			{
 				STBUF_WRITE(&vdec->vbuf, set_rp, vdec_get_associate(vdec)->input.swap_rp);
 				return;
@@ -1401,8 +1422,7 @@ void vdec_stream_skip_data(struct vdec_s *vdec, int skip_size)
 		input->swap_page_phys);
 	WRITE_VREG(VLD_MEM_SWAP_CTL, 1);
 
-	while (READ_VREG(VLD_MEM_SWAP_CTL) & (1<<7))
-		;
+	vdec_wait_reg_clear(__func__, VLD_MEM_SWAP_CTL, 1 << 7);
 	WRITE_VREG(VLD_MEM_SWAP_CTL, 0);
 
 	WRITE_VREG(VLD_MEM_VIFIFO_CURR_PTR,
@@ -1414,8 +1434,7 @@ void vdec_stream_skip_data(struct vdec_s *vdec, int skip_size)
 	WRITE_VREG(VLD_MEM_SWAP_ADDR,
 		input->swap_page_phys);
 	WRITE_VREG(VLD_MEM_SWAP_CTL, 3);
-	while (READ_VREG(VLD_MEM_SWAP_CTL) & (1<<7))
-		;
+	vdec_wait_reg_clear(__func__, VLD_MEM_SWAP_CTL, 1 << 7);
 	WRITE_VREG(VLD_MEM_SWAP_CTL, 0);
 }
 EXPORT_SYMBOL(vdec_stream_skip_data);
@@ -1533,6 +1552,12 @@ int vdec_prepare_input(struct vdec_s *vdec, struct vframe_chunk_s **p)
 			}
 		}
 
+		smp_rmb();
+		if (swap_valid && !swap_page_phys) {
+			pr_err_once("vdec: swap-in skipped, swap page freed during teardown\n");
+			swap_valid = false;
+		}
+
 		if (swap_valid)
 		{
 			if (input->target == VDEC_INPUT_TARGET_VLD)
@@ -1546,7 +1571,7 @@ int vdec_prepare_input(struct vdec_s *vdec, struct vframe_chunk_s **p)
 				WRITE_VREG(VLD_MEM_SWAP_ADDR, swap_page_phys);
 				WRITE_VREG(VLD_MEM_SWAP_CTL, 1);
 
-				while (READ_VREG(VLD_MEM_SWAP_CTL) & (1<<7));
+				vdec_wait_reg_clear(__func__, VLD_MEM_SWAP_CTL, 1 << 7);
 				WRITE_VREG(VLD_MEM_SWAP_CTL, 0);
 
 #ifdef VDEC_FCC_SUPPORT
@@ -1579,7 +1604,7 @@ int vdec_prepare_input(struct vdec_s *vdec, struct vframe_chunk_s **p)
 				WRITE_VREG(HEVC_STREAM_SWAP_ADDR, swap_page_phys);
 				WRITE_VREG(HEVC_STREAM_SWAP_CTRL, 1);
 
-				while (READ_VREG(HEVC_STREAM_SWAP_CTRL) & (1<<7));
+				vdec_wait_reg_clear(__func__, HEVC_STREAM_SWAP_CTRL, 1 << 7);
 
 				WRITE_VREG(HEVC_STREAM_SWAP_CTRL, 0);
 #ifdef VDEC_FCC_SUPPORT
@@ -1882,15 +1907,10 @@ void hevc_wait_ddr(void)
 	spin_unlock_irqrestore(&vdec_spin_lock, flags);
 
 	if (is_cpu_tm2_revb() ||
-		(get_cpu_major_id() >= AM_MESON_CPU_MAJOR_ID_SC2)) {
-		while (!(codec_dmcbus_read(TM2_REVB_DMC_CHAN_STS)
-			& mask))
-			;
-	} else {
-		while (!(codec_dmcbus_read(DMC_CHAN_STS)
-			& mask))
-			;
-	}
+		(get_cpu_major_id() >= AM_MESON_CPU_MAJOR_ID_SC2))
+		vdec_wait_dmc_chan_idle(__func__, TM2_REVB_DMC_CHAN_STS, mask);
+	else
+		vdec_wait_dmc_chan_idle(__func__, DMC_CHAN_STS, mask);
 }
 
 void vdec_save_input_context(struct vdec_s *vdec)
@@ -1904,13 +1924,14 @@ void vdec_save_input_context(struct vdec_s *vdec)
 	if (input->target == VDEC_INPUT_TARGET_VLD)
 		WRITE_VREG(VLD_MEM_VIFIFO_CONTROL, 1<<15);
 
-	if (input_stream_based(input) && (input->swap_needed))
+	smp_rmb();
+	if (input_stream_based(input) && (input->swap_needed) && (input->swap_page_phys))
 	{
 		if (input->target == VDEC_INPUT_TARGET_VLD)
 		{
 			WRITE_VREG(VLD_MEM_SWAP_ADDR, input->swap_page_phys);
 			WRITE_VREG(VLD_MEM_SWAP_CTL, 3);
-			while (READ_VREG(VLD_MEM_SWAP_CTL) & (1<<7));
+			vdec_wait_reg_clear(__func__, VLD_MEM_SWAP_CTL, 1 << 7);
 			WRITE_VREG(VLD_MEM_SWAP_CTL, 0);
 			vdec->input.stream_cookie = READ_VREG(VLD_MEM_VIFIFO_WRAP_COUNT);
 			vdec->input.swap_rp = READ_VREG(VLD_MEM_VIFIFO_RP);
@@ -1922,7 +1943,7 @@ void vdec_save_input_context(struct vdec_s *vdec)
 			WRITE_VREG(HEVC_STREAM_SWAP_ADDR, input->swap_page_phys);
 			WRITE_VREG(HEVC_STREAM_SWAP_CTRL, 3);
 
-			while (READ_VREG(HEVC_STREAM_SWAP_CTRL) & (1<<7));
+			vdec_wait_reg_clear(__func__, HEVC_STREAM_SWAP_CTRL, 1 << 7);
 			WRITE_VREG(HEVC_STREAM_SWAP_CTRL, 0);
 
 			vdec->input.stream_cookie = READ_VREG(HEVC_SHIFT_BYTE_COUNT);
@@ -2012,8 +2033,7 @@ static int vdec_input_read_restore(struct vdec_s *vdec)
 		WRITE_VREG(VLD_MEM_SWAP_CTL, 1);
 
 		/*wait swap busy*/
-		while (READ_VREG(VLD_MEM_SWAP_CTL) & (1<<7))
-			;
+		vdec_wait_reg_clear(__func__, VLD_MEM_SWAP_CTL, 1 << 7);
 
 		WRITE_VREG(VLD_MEM_SWAP_CTL, 0);
 	} else if (input->target == VDEC_INPUT_TARGET_HEVC) {
@@ -2022,9 +2042,7 @@ static int vdec_input_read_restore(struct vdec_s *vdec)
 			input->swap_page_phys);
 		WRITE_VREG(HEVC_STREAM_SWAP_CTRL, 1);
 
-		while (READ_VREG(HEVC_STREAM_SWAP_CTRL)
-			& (1<<7))
-			;
+		vdec_wait_reg_clear(__func__, HEVC_STREAM_SWAP_CTRL, 1 << 7);
 		WRITE_VREG(HEVC_STREAM_SWAP_CTRL, 0);
 	}
 
@@ -2142,6 +2160,7 @@ int vdec_connect(struct vdec_s *vdec)
 		init_completion(&vdec->slave->inactive_done);
 	}
 
+	mutex_lock(&vdec_mutex);
 	flags = vdec_core_lock(vdec_core);
 
 	list_add_tail(&vdec->list, &vdec_core->connected_vdec_list);
@@ -2152,6 +2171,7 @@ int vdec_connect(struct vdec_s *vdec)
 	}
 
 	vdec_core_unlock(vdec_core, flags);
+	mutex_unlock(&vdec_mutex);
 
 	up(&vdec_core->sem);
 
@@ -2333,7 +2353,7 @@ s32 vdec_init(struct vdec_s *vdec, int is_4k)
 	if (dev_name == NULL)
 		return -ENODEV;
 
-	pr_info("vdec_init, dev_name:%s, vdec_type=%s  id = %d\n",
+	pr_debug("vdec_init, dev_name:%s, vdec_type=%s  id = %d\n",
 		dev_name, vdec_type_str(vdec), vdec->id);
 
 	snprintf(vdec->name, sizeof(vdec->name),
@@ -2371,8 +2391,7 @@ s32 vdec_init(struct vdec_s *vdec, int is_4k)
 			) ?
 				VDEC_INPUT_TARGET_HEVC :
 				VDEC_INPUT_TARGET_VLD);
-	if (vdec_single(vdec) || (vdec_get_debug_flags() & 0x2))
-		vdec_enable_DMC(vdec);
+	vdec_enable_DMC(vdec);
 	p->cma_dev = vdec_core->cma_dev;
 	p->get_canvas = get_canvas;
 	p->get_canvas_ex = get_canvas_ex;
@@ -2788,6 +2807,7 @@ static void vdec_connect_list_force_clear(struct vdec_core_s *core, struct vdec_
 	struct vdec_s *vdec, *tmp;
 	unsigned long flags;
 
+	mutex_lock(&vdec_mutex);
 	flags = vdec_core_lock(core);
 
 	list_for_each_entry_safe(vdec, tmp,
@@ -2809,6 +2829,7 @@ static void vdec_connect_list_force_clear(struct vdec_core_s *core, struct vdec_
 	}
 
 	vdec_core_unlock(core, flags);
+	mutex_unlock(&vdec_mutex);
 }
 
 st_userdata *get_vdec_userdata_ctx()
@@ -2960,6 +2981,7 @@ int vdec_reset(struct vdec_s *vdec)
 			vdec->slave->reset(vdec->slave);
 	}
 	vdec->mc_loaded = 0;/*clear for reload firmware*/
+	vdec->hdr10p_data_valid = false;
 	vdec_input_release(&vdec->input);
 
 	vdec_input_init(&vdec->input, vdec);
@@ -3234,8 +3256,8 @@ thread_isr_done:
 int vdec_check_rec_num_enough(struct vdec_s *vdec) {
 
 	if (vdec->vbuf.use_ptsserv) {
-		return (pts_get_rec_num(PTS_TYPE_VIDEO,
-					vdec->input.total_rd_count) >= 2);
+		return (pts_get_rec_num_bounded(PTS_TYPE_VIDEO,
+					vdec->input.total_rd_count, 2) >= 2);
 	} else {
 		u64 total_rd_count = vdec->input.total_rd_count;
 
@@ -3512,6 +3534,7 @@ static int vdec_core_thread(void *data)
 		/* elect next vdec to be scheduled */
 		vdec = core->last_vdec;
 		if (vdec) {
+			mutex_lock(&vdec_mutex);
 			vdec = list_entry(vdec->list.next, struct vdec_s, list);
 			list_for_each_entry_from(vdec,
 				&core->connected_vdec_list, list) {
@@ -3524,12 +3547,14 @@ static int vdec_core_thread(void *data)
 				if (sched_mask)
 					break;
 			}
+			mutex_unlock(&vdec_mutex);
 
 			if (&vdec->list == &core->connected_vdec_list)
 				vdec = NULL;
 		}
 
 		if (!vdec) {
+			mutex_lock(&vdec_mutex);
 			/* search from beginning */
 			list_for_each_entry(vdec,
 				&core->connected_vdec_list, list) {
@@ -3559,6 +3584,7 @@ static int vdec_core_thread(void *data)
 				if (sched_mask)
 					break;
 			}
+			mutex_unlock(&vdec_mutex);
 
 			if (&vdec->list == &core->connected_vdec_list)
 				vdec = NULL;
@@ -3865,15 +3891,10 @@ void vdec_reset_core(struct vdec_s *vdec)
 	spin_unlock_irqrestore(&vdec_spin_lock, flags);
 
 	if (is_cpu_tm2_revb() ||
-		(get_cpu_major_id() >= AM_MESON_CPU_MAJOR_ID_SC2)) {
-		while (!(codec_dmcbus_read(TM2_REVB_DMC_CHAN_STS)
-			& mask))
-			;
-	} else {
-		while (!(codec_dmcbus_read(DMC_CHAN_STS)
-			& mask))
-			;
-	}
+		(get_cpu_major_id() >= AM_MESON_CPU_MAJOR_ID_SC2))
+		vdec_wait_dmc_chan_idle(__func__, TM2_REVB_DMC_CHAN_STS, mask);
+	else
+		vdec_wait_dmc_chan_idle(__func__, DMC_CHAN_STS, mask);
 	/*
 	 * 2: assist
 	 * 3: vld_reset
@@ -3951,15 +3972,10 @@ void hevc_reset_core(struct vdec_s *vdec)
 		spin_unlock_irqrestore(&vdec_spin_lock, flags);
 
 		if (is_cpu_tm2_revb()  ||
-			(get_cpu_major_id() >= AM_MESON_CPU_MAJOR_ID_SC2)) {
-			while (!(codec_dmcbus_read(TM2_REVB_DMC_CHAN_STS)
-				& mask))
-				;
-		} else {
-			while (!(codec_dmcbus_read(DMC_CHAN_STS)
-				& mask))
-				;
-		}
+			(get_cpu_major_id() >= AM_MESON_CPU_MAJOR_ID_SC2))
+			vdec_wait_dmc_chan_idle(__func__, TM2_REVB_DMC_CHAN_STS, mask);
+		else
+			vdec_wait_dmc_chan_idle(__func__, DMC_CHAN_STS, mask);
 	}
 	if (vdec == NULL || input_frame_based(vdec))
 		WRITE_VREG(HEVC_STREAM_CONTROL, 0);
@@ -3998,8 +4014,7 @@ void hevc_reset_core(struct vdec_s *vdec)
 	}
 
 	WRITE_VREG(DOS_SW_RESET3, 0);
-	while (READ_VREG(HEVC_WRRSP_LMEM) & 0xfff)
-		;
+	vdec_wait_reg_clear(__func__, HEVC_WRRSP_LMEM, 0xfff);
 	WRITE_VREG(HEVC_SAO_MMU_RESET_CTRL,
 			READ_VREG(HEVC_SAO_MMU_RESET_CTRL) & (~1));
 
@@ -4938,8 +4953,7 @@ static void vdec_fcc_jump_back(struct vdec_s *vdec)
 			WRITE_VREG(VLD_MEM_SWAP_ADDR,
 				input->swap_page_phys);
 			WRITE_VREG(VLD_MEM_SWAP_CTL, 3);
-			while (READ_VREG(VLD_MEM_SWAP_CTL) & (1<<7))
-				;
+			vdec_wait_reg_clear(__func__, VLD_MEM_SWAP_CTL, 1 << 7);
 			WRITE_VREG(VLD_MEM_SWAP_CTL, 0);
 			vdec->fcc_status = SWITCH_DONE_STATUS;
 			if (fcc_debug_enable()) {
@@ -4965,9 +4979,7 @@ static void vdec_fcc_jump_back(struct vdec_s *vdec)
 				input->swap_page_phys);
 			WRITE_VREG(HEVC_STREAM_SWAP_CTRL, 3);
 
-			while (READ_VREG(HEVC_STREAM_SWAP_CTRL)
-				& (1<<7))
-				;
+			vdec_wait_reg_clear(__func__, HEVC_STREAM_SWAP_CTRL, 1 << 7);
 			WRITE_VREG(HEVC_STREAM_SWAP_CTRL, 0);
 		}
 	}

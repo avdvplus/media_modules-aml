@@ -14,7 +14,6 @@
  * more details.
  *
  */
-#define DEBUG
 #include <linux/compiler.h>
 #include <linux/clk-provider.h>
 #include <linux/err.h>

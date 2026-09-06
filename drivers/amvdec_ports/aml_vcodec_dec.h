@@ -26,6 +26,10 @@
 #include <linux/amlogic/media/video_sink/v4lvideo_ext.h>
 #include "aml_vcodec_util.h"
 
+#ifndef AML_VCODEC_MAX_PLANES
+#define AML_VCODEC_MAX_PLANES	3
+#endif
+
 #define VCODEC_CAPABILITY_4K_DISABLED	0x10
 #define VCODEC_DEC_4K_CODED_WIDTH	4096U
 #define VCODEC_DEC_4K_CODED_HEIGHT	2304U
@@ -63,37 +67,50 @@ struct vdec_v4l2_buffer {
 	u32	buf_idx;
 };
 
+enum aml_capture_buf_state {
+	AML_CAPTURE_BUF_FREE = 0,
+	AML_CAPTURE_BUF_QUEUED_VB2,
+	AML_CAPTURE_BUF_DECODER_OWNED,
+	AML_CAPTURE_BUF_DISPLAY_READY,
+	AML_CAPTURE_BUF_QUEUED_V4L2,
+};
+
+
+struct aml_video_src_buf {
+	struct vb2_v4l2_buffer vb;
+	struct list_head list;
+
+	struct codec_mm_s *mem[AML_VCODEC_MAX_PLANES];
+	char mem_onwer[32];
+	bool used;
+	bool lastframe;
+	bool error;
+};
 
 /**
- * struct aml_video_dec_buf - Private data related to each VB2 buffer.
- * @b:		VB2 buffer
+ * struct aml_video_dst_buf - Private data related to each CAPTURE buffer.
+ * @vb:		VB2 buffer
  * @list:	link list
- * @used:	Capture buffer contain decoded frame data and keep in
- *			codec data structure
- * @ready_to_display:	Capture buffer not display yet
- * @queued_in_vb2:	Capture buffer is queue in vb2
- * @queued_in_v4l2:	Capture buffer is in v4l2 driver, but not in vb2
- *			queue yet
- * @lastframe:		Intput buffer is last buffer - EOS
- * @error:		An unrecoverable error occurs on this buffer.
  * @frame_buffer:	Decode status, and buffer information of Capture buffer
- *
- * Note : These status information help us track and debug buffer state
+ * @privdata:	Per-buffer vframe handoff data
+ * @mem:		codec_mm mappings for the capture planes
+ * @mem_onwer:	codec_mm owner tag
+ * @used:	Decoder currently owns the capture buffer
+ * @state:	Capture buffer lifecycle state within the decoder bridge
+ * @error:		An unrecoverable error occurs on this buffer.
  */
-struct aml_video_dec_buf {
+struct aml_video_dst_buf {
 	struct vb2_v4l2_buffer vb;
 	struct list_head list;
 
 	struct vdec_v4l2_buffer frame_buffer;
+	struct aml_vcodec_mem cached_mem[AML_VCODEC_MAX_PLANES];
 	struct file_private_data privdata;
-	struct codec_mm_s *mem[2];
+	struct codec_mm_s *mem[AML_VCODEC_MAX_PLANES];
 	char mem_onwer[32];
+	bool plane_meta_cached;
 	bool used;
-	bool ready_to_display;
-	bool que_in_m2m;
-	bool queued_in_vb2;
-	bool queued_in_v4l2;
-	bool lastframe;
+	enum aml_capture_buf_state state;
 	bool error;
 };
 

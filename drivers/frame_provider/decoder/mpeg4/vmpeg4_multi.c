@@ -1271,7 +1271,7 @@ static irqreturn_t vmpeg4_isr_thread_fn(struct vdec_s *vdec, int irq)
 		} else {
 			duration = hw->vmpeg4_amstream_dec_info.rate;
 #if 0
-			pr_info("info rate = %d, ucode rate = 0x%x:0x%x\n",
+			pr_debug("info rate = %d, ucode rate = 0x%x:0x%x\n",
 				   hw->vmpeg4_amstream_dec_info.rate,
 				   READ_VREG(MP4_RATE), vop_time_inc);
 #endif

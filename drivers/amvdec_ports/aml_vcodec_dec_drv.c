@@ -18,7 +18,6 @@
 * Description:
 */
 
-#define DEBUG
 #include <linux/slab.h>
 #include <linux/interrupt.h>
 #include <linux/irq.h>
@@ -55,7 +54,7 @@ static int fops_vcodec_open(struct file *file)
 {
 	struct aml_vcodec_dev *dev = video_drvdata(file);
 	struct aml_vcodec_ctx *ctx = NULL;
-	struct aml_video_dec_buf *aml_buf = NULL;
+	struct aml_video_src_buf *aml_buf = NULL;
 	int ret = 0;
 	struct vb2_queue *src_vq;
 
@@ -212,6 +211,8 @@ int v4l2_alloc_fd(int *fd)
 	if (!file->private_data) {
 		v4l_dbg(0, V4L_DEBUG_CODEC_ERROR,
 			"alloc priv data faild.\n");
+		fput(file);
+		put_unused_fd(file_fd);
 		return -ENOMEM;
 	}
 

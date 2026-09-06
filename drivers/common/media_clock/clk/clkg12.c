@@ -14,7 +14,6 @@
  * more details.
  *
  */
-#define DEBUG
 #include <linux/init.h>
 #include <linux/kernel.h>
 #include <linux/types.h>
@@ -354,10 +353,10 @@ static struct clk_set_setting clks_for_formats[] = {
 				}
 		},
 	{			/*[VFORMAT_VC1] */
-			{{1280 * 720 * 30, 100}, {1920 * 1080 * 30, 166},
-				{1920 * 1080 * 60, 333},
-				{4096 * 2048 * 30, 600}, {4096 * 2048 * 60,
-						600}, {INT_MAX, 600},
+			{{1280 * 720 * 30, 100}, {1920 * 1080 * 21, 166},
+				{1920 * 1080 * 30, 333},
+				{1920 * 1080 * 60, 600},
+				{4096 * 2048 * 60, 600}, {INT_MAX, 600},
 				}
 		},
 	{			/*[VFORMAT_AVS] */

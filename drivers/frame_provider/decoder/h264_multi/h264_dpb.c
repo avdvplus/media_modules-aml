@@ -17,7 +17,6 @@
 *
 * Description:
 */
-#define DEBUG
 #include <linux/kernel.h>
 #include <linux/types.h>
 #include <linux/errno.h>

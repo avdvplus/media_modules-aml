@@ -1147,16 +1147,24 @@ void vdec_input_release(struct vdec_input_s *input)
 	}
 
 	/* release swap pages */
-	if (vdec_secure(input->vdec)) {
-		if (input->swap_page_phys)
-			codec_mm_free_for_dma("SWAP", input->swap_page_phys);
-	} else {
-		if (input->swap_page)
-			codec_mm_dma_free_coherent(input->mem_handle);
+	{
+		void *swap_page = input->swap_page;
+		dma_addr_t swap_page_phys = input->swap_page_phys;
+		ulong mem_handle = input->mem_handle;
+
+		input->swap_valid = false;
+		input->swap_page_phys = 0;
+		input->swap_page = NULL;
+		smp_wmb();
+
+		if (vdec_secure(input->vdec)) {
+			if (swap_page_phys)
+				codec_mm_free_for_dma("SWAP", swap_page_phys);
+		} else {
+			if (swap_page)
+				codec_mm_dma_free_coherent(mem_handle);
+		}
 	}
-	input->swap_page = NULL;
-	input->swap_page_phys = 0;
-	input->swap_valid = false;
 }
 EXPORT_SYMBOL(vdec_input_release);
 

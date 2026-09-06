@@ -55,14 +55,13 @@ static void vdec_vf_put(struct vframe_s *vf, void *op_arg)
 	//vf_put(vf, vfm->recv_name);
 	//vf_notify_provider(vfm->recv_name, VFRAME_EVENT_RECEIVER_PUT, NULL);
 
-	if (vfq_level(&vfm->vf_que_recycle) > POOL_SIZE - 1) {
-		v4l_dbg(vfm->ctx, V4L_DEBUG_CODEC_ERROR, "vfq full.\n");
-		return;
-	}
-
 	atomic_set(&vf->use_cnt, 1);
 
-	vfq_push(&vfm->vf_que_recycle, vf);
+	if (!vfq_push(&vfm->vf_que_recycle, vf)) {
+		v4l_dbg(vfm->ctx, V4L_DEBUG_CODEC_ERROR, "vfq full.\n");
+		vf_put(vf, vfm->recv_name);
+		return;
+	}
 
 	/* schedule capture work. */
 	vdec_device_vf_run(vfm->ctx);
@@ -94,13 +93,21 @@ void video_vf_put(char *receiver, struct vdec_v4l2_buffer *fb, int id)
 {
 	struct vframe_provider_s *vfp = vf_get_provider(receiver);
 	struct vframe_s *vf = (struct vframe_s *)fb->vf_handle;
+	const char *provider_name = vfp ? vfp->name : "unknown";
+
+	if (!vf) {
+		v4l_dbg(0, V4L_DEBUG_CODEC_ERROR,
+			"[%d]: TO (%s) missing vframe handle.\n",
+			id, provider_name);
+		return;
+	}
 
 	ATRACE_COUNTER("v4l2_to", vf->index_disp);
 
 	v4l_dbg(0, V4L_DEBUG_CODEC_OUTPUT,
 		"[%d]: TO   (%s) vf: %p, idx: %d, "
 		"Y:(%lx, %u) C/U:(%lx, %u) V:(%lx, %u)\n",
-		id, vfp->name, vf, vf->index,
+		id, provider_name, vf, vf->index,
 		fb->m.mem[0].addr, fb->m.mem[0].size,
 		fb->m.mem[1].addr, fb->m.mem[1].size,
 		fb->m.mem[2].addr, fb->m.mem[2].size);
@@ -161,22 +168,26 @@ static int video_receiver_event_fun(int type, void *data, void *private_data)
 	}
 
 	case VFRAME_EVENT_PROVIDER_VFRAME_READY: {
-		if (vfq_level(&vfm->vf_que) > POOL_SIZE - 1)
-			ret = -1;
-
 		if (!vf_peek(vfm->recv_name))
 			ret = -1;
 
-		vfm->vf = vf_get(vfm->recv_name);
-		if (!vfm->vf)
-			ret = -1;
+		if (!ret) {
+			vfm->vf = vf_get(vfm->recv_name);
+			if (!vfm->vf)
+				ret = -1;
+		}
 
 		if (ret < 0) {
 			v4l_dbg(vfm->ctx, V4L_DEBUG_CODEC_ERROR, "receiver vf err.\n");
 			break;
 		}
 
-		vfq_push(&vfm->vf_que, vfm->vf);
+		if (!vfq_push(&vfm->vf_que, vfm->vf)) {
+			v4l_dbg(vfm->ctx, V4L_DEBUG_CODEC_ERROR, "receiver queue full.\n");
+			vf_put(vfm->vf, vfm->recv_name);
+			vfm->vf = NULL;
+			break;
+		}
 
 		if (vfm->ada_ctx->vfm_path == FRAME_BASE_PATH_V4L_VIDEO) {
 			vf_notify_receiver(vfm->prov_name,
